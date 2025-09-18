@@ -5,3 +5,4 @@ matplotlib
 plotly
 requests
 streamlit-option-menu==0.3.6
+psycopg2-binary
