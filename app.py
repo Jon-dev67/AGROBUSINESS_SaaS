@@ -11,12 +11,13 @@ import hashlib
 import requests
 import time
 from streamlit_option_menu import option_menu
+import io
 
 # ================================
 # CONFIGURAÇÕES INICIAIS
 # ================================
 st.set_page_config(
-    page_title="🌱 AgroSaaS - Gestão Agrícola Inteligente",
+    page_title="🌱 AgroGestão - Gestão Agrícola",
     layout="wide",
     initial_sidebar_state="expanded",
     page_icon="🌱"
@@ -73,7 +74,7 @@ apply_dark_theme()
 # ================================
 # CONSTANTES E CONFIGURAÇÕES
 # ================================
-DB_PATH = "agrosaas.db"
+DB_PATH = "agrogestao.db"
 API_KEY = "eef20bca4e6fb1ff14a81a3171de5cec"
 DEFAULT_CITY = "Londrina"
 
@@ -84,20 +85,9 @@ def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     
-    # Tabela de usuários
-    c.execute('''CREATE TABLE IF NOT EXISTS users
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  username TEXT UNIQUE NOT NULL,
-                  password TEXT NOT NULL,
-                  email TEXT UNIQUE NOT NULL,
-                  full_name TEXT NOT NULL,
-                  role TEXT DEFAULT 'user',
-                  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
-    
     # Tabela de produções
     c.execute('''CREATE TABLE IF NOT EXISTS productions
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  user_id INTEGER NOT NULL,
                   date TEXT NOT NULL,
                   local TEXT NOT NULL,
                   product TEXT NOT NULL,
@@ -107,13 +97,11 @@ def init_db():
                   humidity REAL,
                   rain REAL,
                   weather_data TEXT,
-                  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                  FOREIGN KEY (user_id) REFERENCES users (id))''')
+                  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
     
     # Tabela de insumos
     c.execute('''CREATE TABLE IF NOT EXISTS inputs
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  user_id INTEGER NOT NULL,
                   date TEXT NOT NULL,
                   type TEXT NOT NULL,
                   description TEXT NOT NULL,
@@ -121,38 +109,28 @@ def init_db():
                   unit TEXT NOT NULL,
                   cost REAL NOT NULL,
                   location TEXT,
-                  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                  FOREIGN KEY (user_id) REFERENCES users (id))''')
+                  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
     
-    # Tabela de configurações de preços (agora por usuário)
+    # Tabela de configurações de preços
     c.execute('''CREATE TABLE IF NOT EXISTS price_config
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  user_id INTEGER NOT NULL,
                   product TEXT NOT NULL,
                   first_quality_price REAL NOT NULL,
                   second_quality_price REAL NOT NULL,
                   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                  UNIQUE(user_id, product),
-                  FOREIGN KEY (user_id) REFERENCES users (id))''')
+                  UNIQUE(product))''')
     
-    # Inserir admin padrão se não existir
-    c.execute("SELECT COUNT(*) FROM users WHERE username = 'admin'")
-    if c.fetchone()[0] == 0:
-        hashed_password = hashlib.sha256("admin123".encode()).hexdigest()
-        c.execute("INSERT INTO users (username, password, email, full_name, role) VALUES (?, ?, ?, ?, ?)",
-                  ('admin', hashed_password, 'admin@agrosaas.com', 'Administrador', 'admin'))
-    
-    # Inserir preços padrão para o admin se a tabela estiver vazia
+    # Inserir preços padrão se a tabela estiver vazia
     c.execute("SELECT COUNT(*) FROM price_config")
     if c.fetchone()[0] == 0:
         default_prices = [
-            (1, "Tomate", 15.0, 8.0),
-            (1, "Alface", 12.0, 6.0),
-            (1, "Pepino", 10.0, 5.0),
-            (1, "Pimentão", 18.0, 9.0),
-            (1, "Morango", 25.0, 12.0)
+            ("Tomate", 15.0, 8.0),
+            ("Alface", 12.0, 6.0),
+            ("Pepino", 10.0, 5.0),
+            ("Pimentão", 18.0, 9.0),
+            ("Morango", 25.0, 12.0)
         ]
-        c.executemany("INSERT INTO price_config (user_id, product, first_quality_price, second_quality_price) VALUES (?, ?, ?, ?)", default_prices)
+        c.executemany("INSERT INTO price_config (product, first_quality_price, second_quality_price) VALUES (?, ?, ?)", default_prices)
     
     conn.commit()
     conn.close()
@@ -161,61 +139,19 @@ def get_db_connection():
     return sqlite3.connect(DB_PATH)
 
 # ================================
-# FUNÇÕES DE AUTENTICAÇÃO
-# ================================
-def make_hashes(password):
-    return hashlib.sha256(password.encode()).hexdigest()
-
-def check_hashes(password, hashed_text):
-    return make_hashes(password) == hashed_text
-
-def create_user(username, password, email, full_name, role='user'):
-    conn = get_db_connection()
-    c = conn.cursor()
-    try:
-        c.execute("INSERT INTO users (username, password, email, full_name, role) VALUES (?, ?, ?, ?, ?)",
-                  (username, make_hashes(password), email, full_name, role))
-        conn.commit()
-        return True
-    except sqlite3.IntegrityError:
-        return False
-    finally:
-        conn.close()
-
-def login_user(username, password):
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute("SELECT * FROM users WHERE username = ?", (username,))
-    result = c.fetchone()
-    conn.close()
-    
-    if result and check_hashes(password, result[2]):
-        return result
-    return False
-
-def get_all_users():
-    conn = get_db_connection()
-    df = pd.read_sql_query("SELECT id, username, email, full_name, role, created_at FROM users", conn)
-    conn.close()
-    return df
-
-# ================================
 # FUNÇÕES DE DADOS
 # ================================
-def save_production(user_id, date, local, product, first_quality, second_quality, temperature, humidity, rain, weather_data):
+def save_production(date, local, product, first_quality, second_quality, temperature, humidity, rain, weather_data):
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute("INSERT INTO productions (user_id, date, local, product, first_quality, second_quality, temperature, humidity, rain, weather_data) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-              (user_id, date, local, product, first_quality, second_quality, temperature, humidity, rain, weather_data))
+    c.execute("INSERT INTO productions (date, local, product, first_quality, second_quality, temperature, humidity, rain, weather_data) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+              (date, local, product, first_quality, second_quality, temperature, humidity, rain, weather_data))
     conn.commit()
     conn.close()
 
-def load_productions(user_id=None):
+def load_productions():
     conn = get_db_connection()
-    if user_id:
-        df = pd.read_sql_query("SELECT p.*, u.username FROM productions p JOIN users u ON p.user_id = u.id WHERE p.user_id = ?", conn, params=(user_id,))
-    else:
-        df = pd.read_sql_query("SELECT p.*, u.username FROM productions p JOIN users u ON p.user_id = u.id", conn)
+    df = pd.read_sql_query("SELECT * FROM productions ORDER BY date DESC", conn)
     conn.close()
     return df
 
@@ -226,34 +162,31 @@ def delete_production(production_id):
     conn.commit()
     conn.close()
 
-def save_input(user_id, date, input_type, description, quantity, unit, cost, location):
+def save_input(date, input_type, description, quantity, unit, cost, location):
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute("INSERT INTO inputs (user_id, date, type, description, quantity, unit, cost, location) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-              (user_id, date, input_type, description, quantity, unit, cost, location))
+    c.execute("INSERT INTO inputs (date, type, description, quantity, unit, cost, location) VALUES (?, ?, ?, ?, ?, ?, ?)",
+              (date, input_type, description, quantity, unit, cost, location))
     conn.commit()
     conn.close()
 
-def load_inputs(user_id=None):
+def load_inputs():
     conn = get_db_connection()
-    if user_id:
-        df = pd.read_sql_query("SELECT i.*, u.username FROM inputs i JOIN users u ON i.user_id = u.id WHERE i.user_id = ?", conn, params=(user_id,))
-    else:
-        df = pd.read_sql_query("SELECT i.*, u.username FROM inputs i JOIN users u ON i.user_id = u.id", conn)
+    df = pd.read_sql_query("SELECT * FROM inputs ORDER BY date DESC", conn)
     conn.close()
     return df
 
-def load_price_config(user_id):
+def load_price_config():
     conn = get_db_connection()
-    df = pd.read_sql_query("SELECT * FROM price_config WHERE user_id = ?", conn, params=(user_id,))
+    df = pd.read_sql_query("SELECT * FROM price_config", conn)
     conn.close()
     return df
 
-def save_price_config(user_id, product, first_price, second_price):
+def save_price_config(product, first_price, second_price):
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute("INSERT OR REPLACE INTO price_config (user_id, product, first_quality_price, second_quality_price) VALUES (?, ?, ?, ?)",
-              (user_id, product, first_price, second_price))
+    c.execute("INSERT OR REPLACE INTO price_config (product, first_quality_price, second_quality_price) VALUES (?, ?, ?)",
+              (product, first_price, second_price))
     conn.commit()
     conn.close()
 
@@ -281,14 +214,14 @@ def get_weather_data(city):
             st.error(f"Erro ao buscar dados climáticos: {response.status_code}")
             return None
     except Exception as e:
-        st.error(f"Erro de conexão avec la API climática: {str(e)}")
+        st.error(f"Erro de conexão com a API climática: {str(e)}")
         return None
 
 # ================================
 # FUNÇÕES DE CÁLCULO FINANCEIRO
 # ================================
-def calculate_financials(productions_df, inputs_df, user_id):
-    price_config = load_price_config(user_id)
+def calculate_financials(productions_df, inputs_df):
+    price_config = load_price_config()
     
     if productions_df.empty:
         return {
@@ -346,75 +279,14 @@ def calculate_financials(productions_df, inputs_df, user_id):
     }
 
 # ================================
-# PÁGINA DE LOGIN
-# ================================
-def login_page():
-    st.title("🌱 AgroSaaS - Login")
-    
-    with st.form("login_form"):
-        username = st.text_input("Usuário")
-        password = st.text_input("Senha", type="password")
-        submit = st.form_submit_button("Login")
-        
-        if submit:
-            user = login_user(username, password)
-            if user:
-                st.session_state.user = user
-                st.session_state.logged_in = True
-                st.session_state.is_admin = user[5] == 'admin'
-                st.rerun()
-            else:
-                st.error("Usuário ou senha incorretos")
-    
-    st.markdown("---")
-    st.markdown("**Não tem uma conta?** Entre em contato com o administrador do sistema.")
-
-# ================================
-# PÁGINA DE REGISTRO (APENAS ADMIN)
-# ================================
-def register_page():
-    if not st.session_state.get('is_admin', False):
-        st.error("Apenas administradores podem criar usuários.")
-        return
-    
-    st.title("📝 Registrar Novo Usuário")
-    
-    with st.form("register_form"):
-        col1, col2 = st.columns(2)
-        with col1:
-            username = st.text_input("Nome de usuário")
-            password = st.text_input("Senha", type="password")
-        with col2:
-            email = st.text_input("Email")
-            full_name = st.text_input("Nome completo")
-        
-        role = st.selectbox("Tipo de usuário", ["user", "admin"])
-        
-        submit = st.form_submit_button("Criar Usuário")
-        
-        if submit:
-            if not all([username, password, email, full_name]):
-                st.error("Todos os campos são obrigatórios.")
-            else:
-                try:
-                    create_user(username, password, email, full_name, role)
-                    st.success(f"Usuário {username} criado com sucesso!")
-                except sqlite3.IntegrityError:
-                    st.error("Nome de usuário ou email já existe.")
-
-# ================================
 # DASHBOARD PRINCIPAL
 # ================================
 def show_dashboard():
-    st.title("📊 Dashboard AgroSaaS")
+    st.title("📊 Dashboard AgroGestão")
     
     # Carregar dados
-    if st.session_state.is_admin:
-        productions_df = load_productions()
-        inputs_df = load_inputs()
-    else:
-        productions_df = load_productions(st.session_state.user[0])
-        inputs_df = load_inputs(st.session_state.user[0])
+    productions_df = load_productions()
+    inputs_df = load_inputs()
     
     # Filtros na sidebar
     st.sidebar.header("Filtros")
@@ -458,7 +330,7 @@ def show_dashboard():
         filtered_df = pd.DataFrame()
     
     # Calcular métricas financeiras
-    financials = calculate_financials(filtered_df if not filtered_df.empty else productions_df, inputs_df, st.session_state.user[0])
+    financials = calculate_financials(filtered_df if not filtered_df.empty else productions_df, inputs_df)
     
     # Métricas principais
     col1, col2, col3, col4 = st.columns(4)
@@ -550,7 +422,7 @@ def show_dashboard():
         st.subheader("Receita por Cultura")
         
         if not productions_df.empty:
-            price_config = load_price_config(st.session_state.user[0])
+            price_config = load_price_config()
             revenue_by_product = []
             
             for product in filtered_df['product'].unique() if not filtered_df.empty else productions_df['product'].unique():
@@ -771,7 +643,6 @@ def show_production_page():
                 st.error("Preencha todos os campos obrigatórios.")
             else:
                 save_production(
-                    st.session_state.user[0], 
                     date.isoformat(), 
                     location, 
                     product, 
@@ -785,10 +656,7 @@ def show_production_page():
                 st.success("Produção registrada com sucesso!")
     
     # Mostrar dados recentes com opção de exclusão
-    if st.session_state.is_admin:
-        productions_df = load_productions()
-    else:
-        productions_df = load_productions(st.session_state.user[0])
+    productions_df = load_productions()
         
     if not productions_df.empty:
         st.subheader("Produções Recentes")
@@ -807,6 +675,74 @@ def show_production_page():
                     delete_production(row['id'])
                     st.success("Registro excluído com sucesso!")
                     st.rerun()
+        
+        # Adicionar botão para baixar dados em Excel
+        st.markdown("---")
+        st.subheader("Exportar Dados")
+        
+        # Filtrar dados para exportação
+        min_date = pd.to_datetime(productions_df['date']).min().date()
+        max_date = pd.to_datetime(productions_df['date']).max().date()
+        
+        export_date_range = st.date_input(
+            "Período para Exportação",
+            value=(min_date, max_date),
+            min_value=min_date,
+            max_value=max_date,
+            key="export_date_range"
+        )
+        
+        try:
+            export_start_date, export_end_date = export_date_range
+        except:
+            export_start_date, export_end_date = min_date, max_date
+        
+        # Filtrar dados para exportação
+        export_df = productions_df[
+            (pd.to_datetime(productions_df['date']).dt.date >= export_start_date) &
+            (pd.to_datetime(productions_df['date']).dt.date <= export_end_date)
+        ]
+        
+        if not export_df.empty:
+            # Criar Excel em memória
+            output = io.BytesIO()
+            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                export_df.to_excel(writer, sheet_name='Produções', index=False)
+                
+                # Adicionar formatação
+                workbook = writer.book
+                worksheet = writer.sheets['Produções']
+                
+                # Formatar cabeçalhos
+                header_format = workbook.add_format({
+                    'bold': True,
+                    'text_wrap': True,
+                    'valign': 'top',
+                    'fg_color': '#2d5016',
+                    'font_color': 'white',
+                    'border': 1
+                })
+                
+                # Aplicar formatação aos cabeçalhos
+                for col_num, value in enumerate(export_df.columns.values):
+                    worksheet.write(0, col_num, value, header_format)
+                
+                # Ajustar largura das colunas
+                for idx, col in enumerate(export_df.columns):
+                    max_len = max(export_df[col].astype(str).map(len).max(), len(col)) + 2
+                    worksheet.set_column(idx, idx, max_len)
+            
+            output.seek(0)
+            
+            # Botão de download
+            st.download_button(
+                label="📥 Baixar Dados em Excel",
+                data=output,
+                file_name=f"producoes_{export_start_date}_{export_end_date}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+        else:
+            st.warning("Nenhum dado disponível para o período selecionado.")
 
 # ================================
 # PÁGINA DE CADASTRO DE INSUMOS
@@ -837,7 +773,6 @@ def show_inputs_page():
                 st.error("Preencha todos os campos obrigatórios.")
             else:
                 save_input(
-                    st.session_state.user[0],
                     date.isoformat(), 
                     input_type, 
                     description, 
@@ -849,14 +784,79 @@ def show_inputs_page():
                 st.success("Insumo registrado com sucesso!")
     
     # Mostrar dados recentes
-    if st.session_state.is_admin:
-        inputs_df = load_inputs()
-    else:
-        inputs_df = load_inputs(st.session_state.user[0])
+    inputs_df = load_inputs()
         
     if not inputs_df.empty:
         st.subheader("Insumos Recentes")
         st.dataframe(inputs_df.tail(10), use_container_width=True)
+        
+        # Adicionar botão para baixar dados em Excel
+        st.markdown("---")
+        st.subheader("Exportar Dados")
+        
+        # Filtrar dados para exportação
+        min_date = pd.to_datetime(inputs_df['date']).min().date()
+        max_date = pd.to_datetime(inputs_df['date']).max().date()
+        
+        export_date_range = st.date_input(
+            "Período para Exportação",
+            value=(min_date, max_date),
+            min_value=min_date,
+            max_value=max_date,
+            key="export_inputs_date_range"
+        )
+        
+        try:
+            export_start_date, export_end_date = export_date_range
+        except:
+            export_start_date, export_end_date = min_date, max_date
+        
+        # Filtrar dados para exportação
+        export_df = inputs_df[
+            (pd.to_datetime(inputs_df['date']).dt.date >= export_start_date) &
+            (pd.to_datetime(inputs_df['date']).dt.date <= export_end_date)
+        ]
+        
+        if not export_df.empty:
+            # Criar Excel em memória
+            output = io.BytesIO()
+            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                export_df.to_excel(writer, sheet_name='Insumos', index=False)
+                
+                # Adicionar formatação
+                workbook = writer.book
+                worksheet = writer.sheets['Insumos']
+                
+                # Formatar cabeçalhos
+                header_format = workbook.add_format({
+                    'bold': True,
+                    'text_wrap': True,
+                    'valign': 'top',
+                    'fg_color': '#2d5016',
+                    'font_color': 'white',
+                    'border': 1
+                })
+                
+                # Aplicar formatação aos cabeçalhos
+                for col_num, value in enumerate(export_df.columns.values):
+                    worksheet.write(0, col_num, value, header_format)
+                
+                # Ajustar largura das colunas
+                for idx, col in enumerate(export_df.columns):
+                    max_len = max(export_df[col].astype(str).map(len).max(), len(col)) + 2
+                    worksheet.set_column(idx, idx, max_len)
+            
+            output.seek(0)
+            
+            # Botão de download
+            st.download_button(
+                label="📥 Baixar Dados em Excel",
+                data=output,
+                file_name=f"insumos_{export_start_date}_{export_end_date}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+        else:
+            st.warning("Nenhum dado disponível para o período selecionado.")
 
 # ================================
 # PÁGINA DE CONFIGURAÇÕES
@@ -864,7 +864,7 @@ def show_inputs_page():
 def show_settings_page():
     st.title("⚙️ Configurações de Preços")
     
-    price_config = load_price_config(st.session_state.user[0])
+    price_config = load_price_config()
     
     st.subheader("Preços Atuais por Cultura")
     if not price_config.empty:
@@ -890,92 +890,9 @@ def show_settings_page():
             if not all([product, first_price > 0, second_price > 0]):
                 st.error("Preencha todos os campos corretamente.")
             else:
-                save_price_config(st.session_state.user[0], product, first_price, second_price)
+                save_price_config(product, first_price, second_price)
                 st.success("Preços salvos com sucesso!")
                 st.rerun()
-
-# ================================
-# PÁGINA DE ADMINISTRAÇÃO
-# ================================
-def show_admin_page():
-    if not st.session_state.get('is_admin', False):
-        st.error("Acesso restrito a administradores.")
-        return
-    
-    st.title("👨‍💼 Painel de Administração")
-    
-    tab1, tab2 = st.tabs(["Gerenciar Usuários", "Estatísticas do Sistema"])
-    
-    with tab1:
-        st.subheader("Gerenciamento de Usuários")
-        
-        # Formulário para criar usuário
-        with st.expander("Criar Novo Usuário"):
-            with st.form("create_user_form"):
-                col1, col2 = st.columns(2)
-                with col1:
-                    new_username = st.text_input("Nome de usuário")
-                    new_password = st.text_input("Senha", type="password")
-                with col2:
-                    new_email = st.text_input("Email")
-                    new_fullname = st.text_input("Nome completo")
-                
-                new_role = st.selectbox("Tipo de usuário", ["user", "admin"])
-                
-                create_user_btn = st.form_submit_button("Criar Usuário")
-                
-                if create_user_btn:
-                    if not all([new_username, new_password, new_email, new_fullname]):
-                        st.error("Todos os campos são obrigatórios.")
-                    else:
-                        success = create_user(new_username, new_password, new_email, new_fullname, new_role)
-                        if success:
-                            st.success(f"Usuário {new_username} criado com sucesso!")
-                        else:
-                            st.error("Nome de usuário ou email já existe.")
-        
-        # Lista de usuários
-        st.subheader("Usuários do Sistema")
-        users_df = get_all_users()
-        if not users_df.empty:
-            st.dataframe(users_df, use_container_width=True)
-        else:
-            st.info("Nenhum usuário cadastrado.")
-    
-    with tab2:
-        st.subheader("Estatísticas do Sistema")
-        
-        # Estatísticas gerais
-        productions_df = load_productions()
-        inputs_df = load_inputs()
-        users_df = get_all_users()
-        
-        col1, col2, col3, col4 = st.columns(4)
-        
-        with col1:
-            st.metric("Total de Usuários", len(users_df))
-        with col2:
-            st.metric("Total de Produções", len(productions_df))
-        with col3:
-            st.metric("Total de Insumos", len(inputs_df))
-        with col4:
-            total_boxes = productions_df['first_quality'].sum() + productions_df['second_quality'].sum() if not productions_df.empty else 0
-            st.metric("Total de Caixas", f"{total_boxes:,.0f}")
-        
-        # Gráfico de atividades recentes
-        st.subheader("Atividades Recentes")
-        
-        if not productions_df.empty:
-            # Produções por usuário
-            prod_by_user = productions_df.groupby('username').size().reset_index(name='count')
-            fig = px.bar(prod_by_user, x='username', y='count', 
-                         title="Produções por Usuário",
-                         color='username', color_discrete_sequence=px.colors.qualitative.Set3)
-            fig.update_layout(plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
-                             font=dict(color='white'), showlegend=False)
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("Nenhuma produção registrada.")
 
 # ================================
 # PÁGINA DE RELATÓRIOS
@@ -983,12 +900,8 @@ def show_admin_page():
 def show_reports_page():
     st.title("📋 Relatórios")
     
-    if st.session_state.is_admin:
-        productions_df = load_productions()
-        inputs_df = load_inputs()
-    else:
-        productions_df = load_productions(st.session_state.user[0])
-        inputs_df = load_inputs(st.session_state.user[0])
+    productions_df = load_productions()
+    inputs_df = load_inputs()
     
     if productions_df.empty:
         st.warning("Nenhum dado disponível para gerar relatórios.")
@@ -1055,25 +968,54 @@ def show_reports_page():
         st.dataframe(filtered_prod, use_container_width=True)
         
         # Botão para exportar
-        if st.button("Exportar para CSV"):
-            csv = filtered_prod.to_csv(index=False)
+        if st.button("Exportar para Excel"):
+            # Criar Excel em memória
+            output = io.BytesIO()
+            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                filtered_prod.to_excel(writer, sheet_name='Produções', index=False)
+                
+                # Adicionar formatação
+                workbook = writer.book
+                worksheet = writer.sheets['Produções']
+                
+                # Formatar cabeçalhos
+                header_format = workbook.add_format({
+                    'bold': True,
+                    'text_wrap': True,
+                    'valign': 'top',
+                    'fg_color': '#2d5016',
+                    'font_color': 'white',
+                    'border': 1
+                })
+                
+                # Aplicar formatação aos cabeçalhos
+                for col_num, value in enumerate(filtered_prod.columns.values):
+                    worksheet.write(0, col_num, value, header_format)
+                
+                # Ajustar largura das colunas
+                for idx, col in enumerate(filtered_prod.columns):
+                    max_len = max(filtered_prod[col].astype(str).map(len).max(), len(col)) + 2
+                    worksheet.set_column(idx, idx, max_len)
+            
+            output.seek(0)
+            
             st.download_button(
-                label="Baixar CSV",
-                data=csv,
-                file_name=f"relatorio_producao_{start_date}_{end_date}.csv",
-                mime="text/csv"
+                label="Baixar Excel",
+                data=output,
+                file_name=f"relatorio_producao_{start_date}_{end_date}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
     
     elif report_type == "Resumo Financeiro":
         st.header("Relatório Financeiro")
         
-        financials = calculate_financials(filtered_prod, filtered_inputs, st.session_state.user[0])
+        financials = calculate_financials(filtered_prod, filtered_inputs)
         
         col1, col2, col3, col4 = st.columns(4)
         with col1:
             st.metric("Receita Total", f"R$ {financials['total_revenue']:,.2f}")
         with col2:
-            st.metric("Custos Totais", f"R$ {financials['total_costs']:,.2f}")
+            st.metric("Custos Totals", f"R$ {financials['total_costs']:,.2f}")
         with col3:
             st.metric("Lucro Líquido", f"R$ {financials['profit']:,.2f}")
         with col4:
@@ -1081,7 +1023,7 @@ def show_reports_page():
         
         # Detalhamento por produto
         st.subheader("Receita por Produto")
-        price_config = load_price_config(st.session_state.user[0])
+        price_config = load_price_config()
         revenue_by_product = []
         
         for product in filtered_prod['product'].unique():
@@ -1106,6 +1048,45 @@ def show_reports_page():
         
         revenue_df = pd.DataFrame(revenue_by_product)
         st.dataframe(revenue_df, use_container_width=True)
+        
+        # Botão para exportar
+        if st.button("Exportar para Excel"):
+            # Criar Excel em memória
+            output = io.BytesIO()
+            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                revenue_df.to_excel(writer, sheet_name='Receitas', index=False)
+                
+                # Adicionar formatação
+                workbook = writer.book
+                worksheet = writer.sheets['Receitas']
+                
+                # Formatar cabeçalhos
+                header_format = workbook.add_format({
+                    'bold': True,
+                    'text_wrap': True,
+                    'valign': 'top',
+                    'fg_color': '#2d5016',
+                    'font_color': 'white',
+                    'border': 1
+                })
+                
+                # Aplicar formatação aos cabeçalhos
+                for col_num, value in enumerate(revenue_df.columns.values):
+                    worksheet.write(0, col_num, value, header_format)
+                
+                # Ajustar largura das colunas
+                for idx, col in enumerate(revenue_df.columns):
+                    max_len = max(revenue_df[col].astype(str).map(len).max(), len(col)) + 2
+                    worksheet.set_column(idx, idx, max_len)
+            
+            output.seek(0)
+            
+            st.download_button(
+                label="Baixar Excel",
+                data=output,
+                file_name=f"relatorio_financeiro_{start_date}_{end_date}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
     
     elif report_type == "Análise de Qualidade":
         st.header("Análise de Qualidade")
@@ -1138,6 +1119,45 @@ def show_reports_page():
         fig.update_layout(plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
                          font=dict(color='white'))
         st.plotly_chart(fig, use_container_width=True)
+        
+        # Botão para exportar
+        if st.button("Exportar para Excel"):
+            # Criar Excel em memória
+            output = io.BytesIO()
+            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                quality_df.to_excel(writer, sheet_name='Qualidade', index=False)
+                
+                # Adicionar formatação
+                workbook = writer.book
+                worksheet = writer.sheets['Qualidade']
+                
+                # Formatar cabeçalhos
+                header_format = workbook.add_format({
+                    'bold': True,
+                    'text_wrap': True,
+                    'valign': 'top',
+                    'fg_color': '#2d5016',
+                    'font_color': 'white',
+                    'border': 1
+                })
+                
+                # Aplicar formatação aos cabeçalhos
+                for col_num, value in enumerate(quality_df.columns.values):
+                    worksheet.write(0, col_num, value, header_format)
+                
+                # Ajustar largura das colunas
+                for idx, col in enumerate(quality_df.columns):
+                    max_len = max(quality_df[col].astype(str).map(len).max(), len(col)) + 2
+                    worksheet.set_column(idx, idx, max_len)
+            
+            output.seek(0)
+            
+            st.download_button(
+                label="Baixar Excel",
+                data=output,
+                file_name=f"relatorio_qualidade_{start_date}_{end_date}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
     
     elif report_type == "Custos e Insumos":
         st.header("Análise de Custos e Insumos")
@@ -1155,6 +1175,45 @@ def show_reports_page():
             # Tabela de custos detalhada
             st.subheader("Detalhamento de Custos")
             st.dataframe(filtered_inputs, use_container_width=True)
+            
+            # Botão para exportar
+            if st.button("Exportar para Excel"):
+                # Criar Excel em memória
+                output = io.BytesIO()
+                with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                    filtered_inputs.to_excel(writer, sheet_name='Custos', index=False)
+                    
+                    # Adicionar formatação
+                    workbook = writer.book
+                    worksheet = writer.sheets['Custos']
+                    
+                    # Formatar cabeçalhos
+                    header_format = workbook.add_format({
+                        'bold': True,
+                        'text_wrap': True,
+                        'valign': 'top',
+                        'fg_color': '#2d5016',
+                        'font_color': 'white',
+                        'border': 1
+                    })
+                    
+                    # Aplicar formatação aos cabeçalhos
+                    for col_num, value in enumerate(filtered_inputs.columns.values):
+                        worksheet.write(0, col_num, value, header_format)
+                    
+                    # Ajustar largura das colunas
+                    for idx, col in enumerate(filtered_inputs.columns):
+                        max_len = max(filtered_inputs[col].astype(str).map(len).max(), len(col)) + 2
+                        worksheet.set_column(idx, idx, max_len)
+                
+                output.seek(0)
+                
+                st.download_button(
+                    label="Baixar Excel",
+                    data=output,
+                    file_name=f"relatorio_custos_{start_date}_{end_date}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
         else:
             st.info("Nenhum dado de insumos/custos para o período selecionado.")
 
@@ -1165,31 +1224,19 @@ def main():
     # Inicializar banco de dados
     init_db()
     
-    # Verificar se o usuário está logado
-    if 'logged_in' not in st.session_state:
-        st.session_state.logged_in = False
-    
-    if not st.session_state.logged_in:
-        login_page()
-        return
-    
     # Menu lateral
     with st.sidebar:
-        st.image("https://via.placeholder.com/150x50/2d5016/ffffff?text=AgroSaaS", use_container_width=True)
-        st.markdown(f"**Usuário:** {st.session_state.user[3]}")
-        st.markdown(f"**Tipo:** {'Administrador' if st.session_state.is_admin else 'Usuário'}")
+        st.image("https://via.placeholder.com/150x50/2d5016/ffffff?text=AgroGestão", use_container_width=True)
+        st.markdown("**Sistema de Gestão Agrícola**")
         st.markdown("---")
         
-        # Menu de navegação (removida a página de análise)
+        # Menu de navegação
         menu_options = ["📊 Dashboard", "📝 Produção", "💰 Insumos", "📋 Relatórios", "⚙️ Configurações"]
-        
-        if st.session_state.is_admin:
-            menu_options.append("👨‍💼 Administração")
         
         selected = option_menu(
             menu_title="Navegação",
             options=menu_options,
-            icons=["speedometer2", "pencil", "cash-coin", "file-text", "gear", "person-gear"],
+            icons=["speedometer2", "pencil", "cash-coin", "file-text", "gear"],
             menu_icon="cast",
             default_index=0,
             styles={
@@ -1199,12 +1246,6 @@ def main():
                 "nav-link-selected": {"background-color": "#2d5016"},
             }
         )
-        
-        st.markdown("---")
-        if st.button("🚪 Sair"):
-            for key in list(st.session_state.keys()):
-                del st.session_state[key]
-            st.rerun()
     
     # Navegação entre páginas
     if selected == "📊 Dashboard":
@@ -1217,8 +1258,6 @@ def main():
         show_reports_page()
     elif selected == "⚙️ Configurações":
         show_settings_page()
-    elif selected == "👨‍💼 Administração":
-        show_admin_page()
 
 # ================================
 # EXECUÇÃO DO APLICATIVO
