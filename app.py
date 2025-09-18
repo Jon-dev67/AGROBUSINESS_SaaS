@@ -12,6 +12,9 @@ import requests
 import time
 from streamlit_option_menu import option_menu
 import io
+import psycopg2
+from psycopg2.extras import RealDictCursor
+import os
 
 # ================================
 # CONFIGURAÇÕES INICIAIS
@@ -74,121 +77,209 @@ apply_dark_theme()
 # ================================
 # CONSTANTES E CONFIGURAÇÕES
 # ================================
-DB_PATH = "agrogestao.db"
 API_KEY = "eef20bca4e6fb1ff14a81a3171de5cec"
 DEFAULT_CITY = "Londrina"
 
-# ================================
-# FUNÇÕES DE BANCO DE DADOS
-# ================================
-def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    
-    # Tabela de produções
-    c.execute('''CREATE TABLE IF NOT EXISTS productions
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  date TEXT NOT NULL,
-                  local TEXT NOT NULL,
-                  product TEXT NOT NULL,
-                  first_quality REAL NOT NULL,
-                  second_quality REAL NOT NULL,
-                  temperature REAL,
-                  humidity REAL,
-                  rain REAL,
-                  weather_data TEXT,
-                  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
-    
-    # Tabela de insumos
-    c.execute('''CREATE TABLE IF NOT EXISTS inputs
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  date TEXT NOT NULL,
-                  type TEXT NOT NULL,
-                  description TEXT NOT NULL,
-                  quantity REAL NOT NULL,
-                  unit TEXT NOT NULL,
-                  cost REAL NOT NULL,
-                  location TEXT,
-                  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
-    
-    # Tabela de configurações de preços
-    c.execute('''CREATE TABLE IF NOT EXISTS price_config
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  product TEXT NOT NULL,
-                  first_quality_price REAL NOT NULL,
-                  second_quality_price REAL NOT NULL,
-                  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                  UNIQUE(product))''')
-    
-    # Inserir preços padrão se a tabela estiver vazia
-    c.execute("SELECT COUNT(*) FROM price_config")
-    if c.fetchone()[0] == 0:
-        default_prices = [
-            ("Tomate", 15.0, 8.0),
-            ("Alface", 12.0, 6.0),
-            ("Pepino", 10.0, 5.0),
-            ("Pimentão", 18.0, 9.0),
-            ("Morango", 25.0, 12.0)
-        ]
-        c.executemany("INSERT INTO price_config (product, first_quality_price, second_quality_price) VALUES (?, ?, ?)", default_prices)
-    
-    conn.commit()
-    conn.close()
+# Configurações do PostgreSQL
+DB_CONFIG = {
+    "host": "dpg-d361csili9vc738rea90-a.oregon-postgres.render.com",
+    "database": "postgresql_agro",
+    "user": "postgresql_agro_user",
+    "password": "gl5pErtk8tC2vqFLfswn7B7ocoxK7gk5",
+    "port": "5432"
+}
 
+# ================================
+# FUNÇÕES DE BANCO DE DADOS (POSTGRESQL)
+# ================================
 def get_db_connection():
-    return sqlite3.connect(DB_PATH)
+    """Estabelece conexão com o PostgreSQL"""
+    try:
+        conn = psycopg2.connect(
+            host=DB_CONFIG["host"],
+            database=DB_CONFIG["database"],
+            user=DB_CONFIG["user"],
+            password=DB_CONFIG["password"],
+            port=DB_CONFIG["port"]
+        )
+        return conn
+    except Exception as e:
+        st.error(f"Erro ao conectar com o banco de dados: {str(e)}")
+        return None
 
-# ================================
-# FUNÇÕES DE DADOS
-# ================================
+def init_db():
+    """Inicializa as tabelas no PostgreSQL"""
+    conn = get_db_connection()
+    if conn is None:
+        return
+    
+    try:
+        c = conn.cursor()
+        
+        # Tabela de produções
+        c.execute('''CREATE TABLE IF NOT EXISTS productions
+                     (id SERIAL PRIMARY KEY,
+                      date TEXT NOT NULL,
+                      local TEXT NOT NULL,
+                      product TEXT NOT NULL,
+                      first_quality REAL NOT NULL,
+                      second_quality REAL NOT NULL,
+                      temperature REAL,
+                      humidity REAL,
+                      rain REAL,
+                      weather_data TEXT,
+                      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+        
+        # Tabela de insumos
+        c.execute('''CREATE TABLE IF NOT EXISTS inputs
+                     (id SERIAL PRIMARY KEY,
+                      date TEXT NOT NULL,
+                      type TEXT NOT NULL,
+                      description TEXT NOT NULL,
+                      quantity REAL NOT NULL,
+                      unit TEXT NOT NULL,
+                      cost REAL NOT NULL,
+                      location TEXT,
+                      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+        
+        # Tabela de configurações de preços
+        c.execute('''CREATE TABLE IF NOT EXISTS price_config
+                     (id SERIAL PRIMARY KEY,
+                      product TEXT NOT NULL,
+                      first_quality_price REAL NOT NULL,
+                      second_quality_price REAL NOT NULL,
+                      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                      UNIQUE(product))''')
+        
+        # Verificar se a tabela price_config está vazia
+        c.execute("SELECT COUNT(*) FROM price_config")
+        if c.fetchone()[0] == 0:
+            default_prices = [
+                ("Tomate", 15.0, 8.0),
+                ("Alface", 12.0, 6.0),
+                ("Pepino", 10.0, 5.0),
+                ("Pimentão", 18.0, 9.0),
+                ("Morango", 25.0, 12.0)
+            ]
+            for product, first_price, second_price in default_prices:
+                c.execute("INSERT INTO price_config (product, first_quality_price, second_quality_price) VALUES (%s, %s, %s) ON CONFLICT (product) DO NOTHING", 
+                         (product, first_price, second_price))
+        
+        conn.commit()
+        st.success("Banco de dados inicializado com sucesso!")
+    except Exception as e:
+        st.error(f"Erro ao inicializar banco de dados: {str(e)}")
+    finally:
+        conn.close()
+
 def save_production(date, local, product, first_quality, second_quality, temperature, humidity, rain, weather_data):
     conn = get_db_connection()
-    c = conn.cursor()
-    c.execute("INSERT INTO productions (date, local, product, first_quality, second_quality, temperature, humidity, rain, weather_data) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-              (date, local, product, first_quality, second_quality, temperature, humidity, rain, weather_data))
-    conn.commit()
-    conn.close()
+    if conn is None:
+        return False
+    
+    try:
+        c = conn.cursor()
+        c.execute("INSERT INTO productions (date, local, product, first_quality, second_quality, temperature, humidity, rain, weather_data) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                  (date, local, product, first_quality, second_quality, temperature, humidity, rain, weather_data))
+        conn.commit()
+        return True
+    except Exception as e:
+        st.error(f"Erro ao salvar produção: {str(e)}")
+        return False
+    finally:
+        conn.close()
 
 def load_productions():
     conn = get_db_connection()
-    df = pd.read_sql_query("SELECT * FROM productions ORDER BY date DESC", conn)
-    conn.close()
-    return df
+    if conn is None:
+        return pd.DataFrame()
+    
+    try:
+        df = pd.read_sql_query("SELECT * FROM productions ORDER BY date DESC", conn)
+        return df
+    except Exception as e:
+        st.error(f"Erro ao carregar produções: {str(e)}")
+        return pd.DataFrame()
+    finally:
+        conn.close()
 
 def delete_production(production_id):
     conn = get_db_connection()
-    c = conn.cursor()
-    c.execute("DELETE FROM productions WHERE id = ?", (production_id,))
-    conn.commit()
-    conn.close()
+    if conn is None:
+        return False
+    
+    try:
+        c = conn.cursor()
+        c.execute("DELETE FROM productions WHERE id = %s", (production_id,))
+        conn.commit()
+        return True
+    except Exception as e:
+        st.error(f"Erro ao excluir produção: {str(e)}")
+        return False
+    finally:
+        conn.close()
 
 def save_input(date, input_type, description, quantity, unit, cost, location):
     conn = get_db_connection()
-    c = conn.cursor()
-    c.execute("INSERT INTO inputs (date, type, description, quantity, unit, cost, location) VALUES (?, ?, ?, ?, ?, ?, ?)",
-              (date, input_type, description, quantity, unit, cost, location))
-    conn.commit()
-    conn.close()
+    if conn is None:
+        return False
+    
+    try:
+        c = conn.cursor()
+        c.execute("INSERT INTO inputs (date, type, description, quantity, unit, cost, location) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                  (date, input_type, description, quantity, unit, cost, location))
+        conn.commit()
+        return True
+    except Exception as e:
+        st.error(f"Erro ao salvar insumo: {str(e)}")
+        return False
+    finally:
+        conn.close()
 
 def load_inputs():
     conn = get_db_connection()
-    df = pd.read_sql_query("SELECT * FROM inputs ORDER BY date DESC", conn)
-    conn.close()
-    return df
+    if conn is None:
+        return pd.DataFrame()
+    
+    try:
+        df = pd.read_sql_query("SELECT * FROM inputs ORDER BY date DESC", conn)
+        return df
+    except Exception as e:
+        st.error(f"Erro ao carregar insumos: {str(e)}")
+        return pd.DataFrame()
+    finally:
+        conn.close()
 
 def load_price_config():
     conn = get_db_connection()
-    df = pd.read_sql_query("SELECT * FROM price_config", conn)
-    conn.close()
-    return df
+    if conn is None:
+        return pd.DataFrame()
+    
+    try:
+        df = pd.read_sql_query("SELECT * FROM price_config", conn)
+        return df
+    except Exception as e:
+        st.error(f"Erro ao carregar configurações de preço: {str(e)}")
+        return pd.DataFrame()
+    finally:
+        conn.close()
 
 def save_price_config(product, first_price, second_price):
     conn = get_db_connection()
-    c = conn.cursor()
-    c.execute("INSERT OR REPLACE INTO price_config (product, first_quality_price, second_quality_price) VALUES (?, ?, ?)",
-              (product, first_price, second_price))
-    conn.commit()
-    conn.close()
+    if conn is None:
+        return False
+    
+    try:
+        c = conn.cursor()
+        c.execute("INSERT INTO price_config (product, first_quality_price, second_quality_price) VALUES (%s, %s, %s) ON CONFLICT (product) DO UPDATE SET first_quality_price = %s, second_quality_price = %s",
+                  (product, first_price, second_price, first_price, second_price))
+        conn.commit()
+        return True
+    except Exception as e:
+        st.error(f"Erro ao salvar configuração de preço: {str(e)}")
+        return False
+    finally:
+        conn.close()
 
 # ================================
 # FUNÇÕES DE API CLIMÁTICA
@@ -642,7 +733,7 @@ def show_production_page():
             if not all([location, product]):
                 st.error("Preencha todos os campos obrigatórios.")
             else:
-                save_production(
+                success = save_production(
                     date.isoformat(), 
                     location, 
                     product, 
@@ -653,7 +744,10 @@ def show_production_page():
                     rain,
                     json.dumps(weather_data) if weather_data else ""
                 )
-                st.success("Produção registrada com sucesso!")
+                if success:
+                    st.success("Produção registrada com sucesso!")
+                else:
+                    st.error("Erro ao salvar produção. Verifique a conexão com o banco de dados.")
     
     # Mostrar dados recentes com opção de exclusão
     productions_df = load_productions()
@@ -672,9 +766,11 @@ def show_production_page():
                 st.write(f"T: {row['temperature']}°C, U: {row['humidity']}%")
             with col4:
                 if st.button("🗑️", key=f"delete_{row['id']}"):
-                    delete_production(row['id'])
-                    st.success("Registro excluído com sucesso!")
-                    st.rerun()
+                    if delete_production(row['id']):
+                        st.success("Registro excluído com sucesso!")
+                        st.rerun()
+                    else:
+                        st.error("Erro ao excluir registro.")
         
         # Adicionar botão para baixar dados em Excel
         st.markdown("---")
@@ -772,7 +868,7 @@ def show_inputs_page():
             if not all([input_type, description, quantity > 0, cost > 0]):
                 st.error("Preencha todos os campos obrigatórios.")
             else:
-                save_input(
+                success = save_input(
                     date.isoformat(), 
                     input_type, 
                     description, 
@@ -781,7 +877,10 @@ def show_inputs_page():
                     cost, 
                     location
                 )
-                st.success("Insumo registrado com sucesso!")
+                if success:
+                    st.success("Insumo registrado com sucesso!")
+                else:
+                    st.error("Erro ao salvar insumo. Verifique a conexão com o banco de dados.")
     
     # Mostrar dados recentes
     inputs_df = load_inputs()
@@ -890,9 +989,12 @@ def show_settings_page():
             if not all([product, first_price > 0, second_price > 0]):
                 st.error("Preencha todos os campos corretamente.")
             else:
-                save_price_config(product, first_price, second_price)
-                st.success("Preços salvos com sucesso!")
-                st.rerun()
+                success = save_price_config(product, first_price, second_price)
+                if success:
+                    st.success("Preços salvos com sucesso!")
+                    st.rerun()
+                else:
+                    st.error("Erro ao salvar preços. Verifique a conexão com o banco de dados.")
 
 # ================================
 # PÁGINA DE RELATÓRIOS
