@@ -166,6 +166,7 @@ def init_db():
                          (product, first_price, second_price))
         
         conn.commit()
+        st.success("Banco de dados inicializado com sucesso!")
     except Exception as e:
         st.error(f"Erro ao inicializar banco de dados: {str(e)}")
     finally:
@@ -301,8 +302,10 @@ def get_weather_data(city):
                 "icon": data["weather"][0]["icon"]
             }
         else:
+            st.error(f"Erro ao buscar dados climáticos: {response.status_code}")
             return None
     except Exception as e:
+        st.error(f"Erro de conexão com a API climática: {str(e)}")
         return None
 
 # ================================
@@ -331,7 +334,9 @@ def calculate_financials(productions_df, inputs_df):
             first_price = price_row['first_quality_price'].values[0]
             second_price = price_row['second_quality_price'].values[0]
         else:
-            first_price, second_price = 10.0, 5.0
+            # Preços padrão se não encontrado
+            first_price = 10.0
+            second_price = 5.0
         
         first_revenue = row['first_quality'] * first_price
         second_revenue = row['second_quality'] * second_price
@@ -363,255 +368,6 @@ def calculate_financials(productions_df, inputs_df):
         "profit": profit,
         "profit_margin": profit_margin
     }
-
-# ================================
-# PÁGINA ADMINISTRATIVA (CRUD COMPLETO)
-# ================================
-def show_admin_page():
-    st.title("🔧 Área Administrativa - Gerenciamento de Dados")
-    st.warning("⚠️ **ACESSO RESTRITO** - Esta área permite manipulação direta do banco de dados")
-    
-    # Verificação simples de segurança
-    admin_password = st.text_input("Senha Administrativa", type="password")
-    if admin_password != "admin123":
-        st.error("Acesso não autorizado")
-        return
-    
-    st.success("Acesso concedido ao modo administrativo")
-    
-    # Seleção de tabela
-    conn = get_db_connection()
-    if conn is None:
-        st.error("Não foi possível conectar ao banco de dados")
-        return
-    
-    try:
-        # Listar tabelas disponíveis
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT table_name 
-            FROM information_schema.tables 
-            WHERE table_schema = 'public'
-        """)
-        tables = [row[0] for row in cursor.fetchall()]
-        
-        selected_table = st.selectbox("Selecione a tabela para gerenciar:", tables)
-        
-        if not selected_table:
-            st.info("Selecione uma tabela para continuar")
-            return
-            
-        # Carregar dados da tabela selecionada
-        df = pd.read_sql_query(f"SELECT * FROM {selected_table} ORDER BY id DESC", conn)
-        
-        # Mostrar estatísticas da tabela
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("Total de Registros", len(df))
-        with col2:
-            st.metric("Colunas", len(df.columns))
-        with col3:
-            if 'created_at' in df.columns:
-                last_update = pd.to_datetime(df['created_at']).max()
-                st.metric("Última Atualização", last_update.strftime('%d/%m/%Y'))
-        
-        # Abas para diferentes operações
-        tab1, tab2, tab3, tab4 = st.tabs(["📋 Visualizar Dados", "➕ Adicionar Registro", "✏️ Editar Registro", "🗑️ Excluir Registros"])
-        
-        with tab1:
-            st.subheader(f"Dados da Tabela: {selected_table}")
-            
-            # Filtros
-            col1, col2 = st.columns(2)
-            with col1:
-                if not df.empty:
-                    records_per_page = st.selectbox("Registros por página:", [10, 25, 50, 100], index=0)
-                else:
-                    records_per_page = 10
-                    
-            with col2:
-                search_term = st.text_input("🔍 Buscar em todos os campos:")
-            
-            # Aplicar filtro de busca
-            if search_term and not df.empty:
-                filtered_df = df.copy()
-                for col in filtered_df.columns:
-                    if filtered_df[col].dtype == 'object':
-                        filtered_df = filtered_df[filtered_df[col].astype(str).str.contains(search_term, case=False, na=False)]
-            else:
-                filtered_df = df
-            
-            # Paginação
-            if not filtered_df.empty:
-                total_pages = max(1, len(filtered_df) // records_per_page + (1 if len(filtered_df) % records_per_page else 0))
-                page_number = st.number_input("Página:", min_value=1, max_value=total_pages, value=1)
-                
-                start_idx = (page_number - 1) * records_per_page
-                end_idx = min(start_idx + records_per_page, len(filtered_df))
-                
-                st.write(f"Mostrando registros {start_idx + 1} a {end_idx} de {len(filtered_df)}")
-                st.dataframe(filtered_df.iloc[start_idx:end_idx], use_container_width=True)
-                
-                # Botão de exportação
-                csv = filtered_df.to_csv(index=False)
-                st.download_button(
-                    label="📥 Exportar para CSV",
-                    data=csv,
-                    file_name=f"{selected_table}_export.csv",
-                    mime="text/csv"
-                )
-            else:
-                st.info("Nenhum registro encontrado")
-        
-        with tab2:
-            st.subheader("Adicionar Novo Registro")
-            
-            if df.empty:
-                st.warning("Não é possível determinar a estrutura da tabela vazia")
-                return
-                
-            # Gerar formulário dinamicamente baseado na estrutura da tabela
-            with st.form("add_record_form"):
-                new_record = {}
-                columns = [col for col in df.columns if col not in ['id', 'created_at']]
-                
-                for col in columns:
-                    col_type = df[col].dtype
-                    
-                    if col_type in ['int64', 'float64']:
-                        new_record[col] = st.number_input(f"{col}:", value=0.0)
-                    elif 'date' in col.lower():
-                        new_record[col] = st.date_input(f"{col}:", value=datetime.now()).isoformat()
-                    else:
-                        new_record[col] = st.text_input(f"{col}:")
-                
-                submitted = st.form_submit_button("Adicionar Registro")
-                
-                if submitted:
-                    try:
-                        # Construir query INSERT dinamicamente
-                        columns_str = ', '.join(new_record.keys())
-                        placeholders = ', '.join(['%s'] * len(new_record))
-                        values = list(new_record.values())
-                        
-                        query = f"INSERT INTO {selected_table} ({columns_str}) VALUES ({placeholders})"
-                        cursor.execute(query, values)
-                        conn.commit()
-                        
-                        st.success("✅ Registro adicionado com sucesso!")
-                        st.rerun()
-                        
-                    except Exception as e:
-                        st.error(f"❌ Erro ao adicionar registro: {str(e)}")
-        
-        with tab3:
-            st.subheader("Editar Registro Existente")
-            
-            if df.empty:
-                st.info("Nenhum registro disponível para edição")
-                return
-                
-            # Selecionar registro para editar
-            record_options = [f"ID: {row['id']} - {row.get('product', row.get('description', 'Registro'))}" 
-                            for _, row in df.iterrows()]
-            selected_record = st.selectbox("Selecione o registro para editar:", record_options)
-            
-            if selected_record:
-                record_id = int(selected_record.split('ID: ')[1].split(' -')[0])
-                original_record = df[df['id'] == record_id].iloc[0]
-                
-                with st.form("edit_record_form"):
-                    st.write(f"Editando registro ID: {record_id}")
-                    updated_record = {}
-                    columns = [col for col in df.columns if col != 'id']
-                    
-                    for col in columns:
-                        col_type = df[col].dtype
-                        current_value = original_record[col]
-                        
-                        if col == 'created_at':
-                            st.text_input(f"{col}:", value=str(current_value), disabled=True)
-                            continue
-                            
-                        if col_type in ['int64', 'float64']:
-                            updated_record[col] = st.number_input(f"{col}:", value=float(current_value) if pd.notna(current_value) else 0.0)
-                        elif 'date' in col.lower() and current_value:
-                            try:
-                                date_val = pd.to_datetime(current_value).date()
-                                updated_record[col] = st.date_input(f"{col}:", value=date_val).isoformat()
-                            except:
-                                updated_record[col] = st.text_input(f"{col}:", value=str(current_value))
-                        else:
-                            updated_record[col] = st.text_input(f"{col}:", value=str(current_value) if pd.notna(current_value) else "")
-                    
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        submitted = st.form_submit_button("💾 Salvar Alterações")
-                    with col2:
-                        if st.form_submit_button("❌ Cancelar"):
-                            st.rerun()
-                    
-                    if submitted:
-                        try:
-                            # Construir query UPDATE dinamicamente
-                            set_clause = ', '.join([f"{col} = %s" for col in updated_record.keys()])
-                            values = list(updated_record.values()) + [record_id]
-                            
-                            query = f"UPDATE {selected_table} SET {set_clause} WHERE id = %s"
-                            cursor.execute(query, values)
-                            conn.commit()
-                            
-                            st.success("✅ Registro atualizado com sucesso!")
-                            st.rerun()
-                            
-                        except Exception as e:
-                            st.error(f"❌ Erro ao atualizar registro: {str(e)}")
-        
-        with tab4:
-            st.subheader("Excluir Registros")
-            st.error("⚠️ **ATENÇÃO**: Esta operação é irreversível!")
-            
-            if df.empty:
-                st.info("Nenhum registro disponível para exclusão")
-                return
-            
-            # Seleção múltipla para exclusão
-            records_to_delete = st.multiselect(
-                "Selecione os registros para excluir:",
-                options=[f"ID: {row['id']} - {row.get('product', row.get('description', 'Registro'))}" 
-                        for _, row in df.iterrows()],
-                help="Ctrl+click para selecionar múltiplos registros"
-            )
-            
-            if records_to_delete:
-                st.warning(f"🚨 Você está prestes a excluir {len(records_to_delete)} registro(s)")
-                
-                # Mostrar preview dos registros selecionados
-                delete_ids = [int(record.split('ID: ')[1].split(' -')[0]) for record in records_to_delete]
-                preview_df = df[df['id'].isin(delete_ids)]
-                st.dataframe(preview_df, use_container_width=True)
-                
-                # Confirmação final
-                confirmation = st.text_input("Digite 'CONFIRMAR' para prosseguir com a exclusão:")
-                
-                if st.button("🗑️ Excluir Permanentemente", disabled=confirmation != "CONFIRMAR"):
-                    try:
-                        # Construir query DELETE
-                        placeholders = ', '.join(['%s'] * len(delete_ids))
-                        query = f"DELETE FROM {selected_table} WHERE id IN ({placeholders})"
-                        cursor.execute(query, delete_ids)
-                        conn.commit()
-                        
-                        st.success(f"✅ {len(delete_ids)} registro(s) excluído(s) com sucesso!")
-                        st.rerun()
-                        
-                    except Exception as e:
-                        st.error(f"❌ Erro ao excluir registros: {str(e)}")
-    
-    except Exception as e:
-        st.error(f"Erro ao acessar o banco de dados: {str(e)}")
-    finally:
-        conn.close()
 
 # ================================
 # DASHBOARD PRINCIPAL
@@ -694,13 +450,14 @@ def show_dashboard():
         st.metric("Lucro Líquido", f"R$ {financials['profit']:,.2f}", f"{financials['profit_margin']:.1f}%")
         st.markdown('</div>', unsafe_allow_html=True)
     
-    # Gráficos
-    if not productions_df.empty:
-        col1, col2 = st.columns(2)
+    # Gráficos - Primeira linha
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown('<div class="card">', unsafe_allow_html=True)
+        st.subheader("Produção por Cultura")
         
-        with col1:
-            st.markdown('<div class="card">', unsafe_allow_html=True)
-            st.subheader("Produção por Cultura")
+        if not filtered_df.empty:
             production_by_product = filtered_df.groupby('product')[['first_quality', 'second_quality']].sum().reset_index()
             production_by_product['total'] = production_by_product['first_quality'] + production_by_product['second_quality']
             
@@ -709,11 +466,24 @@ def show_dashboard():
             fig.update_layout(showlegend=False, plot_bgcolor='rgba(0,0,0,0)', 
                              paper_bgcolor='rgba(0,0,0,0)', font=dict(color='white'))
             st.plotly_chart(fig, use_container_width=True)
-            st.markdown('</div>', unsafe_allow_html=True)
+        elif not productions_df.empty:
+            production_by_product = productions_df.groupby('product')[['first_quality', 'second_quality']].sum().reset_index()
+            production_by_product['total'] = production_by_product['first_quality'] + production_by_product['second_quality']
+            
+            fig = px.bar(production_by_product, x='product', y='total', 
+                         color='product', color_discrete_sequence=px.colors.qualitative.Set3)
+            fig.update_layout(showlegend=False, plot_bgcolor='rgba(0,0,0,0)', 
+                             paper_bgcolor='rgba(0,0,0,0)', font=dict(color='white'))
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("Nenhum dado de produção disponível.")
+        st.markdown('</div>', unsafe_allow_html=True)
+    
+    with col2:
+        st.markdown('<div class="card">', unsafe_allow_html=True)
+        st.subheader("Produção por Área/Local")
         
-        with col2:
-            st.markdown('<div class="card">', unsafe_allow_html=True)
-            st.subheader("Produção por Área/Local")
+        if not filtered_df.empty:
             production_by_location = filtered_df.groupby('local')[['first_quality', 'second_quality']].sum().reset_index()
             production_by_location['total'] = production_by_location['first_quality'] + production_by_location['second_quality']
             
@@ -722,12 +492,118 @@ def show_dashboard():
             fig.update_layout(plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
                              font=dict(color='white'))
             st.plotly_chart(fig, use_container_width=True)
-            st.markdown('</div>', unsafe_allow_html=True)
+        elif not productions_df.empty:
+            production_by_location = productions_df.groupby('local')[['first_quality', 'second_quality']].sum().reset_index()
+            production_by_location['total'] = production_by_location['first_quality'] + production_by_location['second_quality']
+            
+            fig = px.pie(production_by_location, values='total', names='local',
+                         color_discrete_sequence=px.colors.qualitative.Set3)
+            fig.update_layout(plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
+                             font=dict(color='white'))
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("Nenhum dado de produção disponível.")
+        st.markdown('</div>', unsafe_allow_html=True)
+    
+    # Gráficos - Segunda linha
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown('<div class="card">', unsafe_allow_html=True)
+        st.subheader("Receita por Cultura")
+        
+        if not productions_df.empty:
+            price_config = load_price_config()
+            revenue_by_product = []
+            
+            for product in filtered_df['product'].unique() if not filtered_df.empty else productions_df['product'].unique():
+                if not filtered_df.empty:
+                    product_data = filtered_df[filtered_df['product'] == product]
+                else:
+                    product_data = productions_df[productions_df['product'] == product]
+                    
+                product_price = price_config[price_config['product'] == product]
+                
+                if not product_price.empty:
+                    first_price = product_price['first_quality_price'].values[0]
+                    second_price = product_price['second_quality_price'].values[0]
+                else:
+                    first_price, second_price = 10.0, 5.0
+                
+                first_revenue = product_data['first_quality'].sum() * first_price
+                second_revenue = product_data['second_quality'].sum() * second_price
+                total_revenue = first_revenue + second_revenue
+                
+                revenue_by_product.append({
+                    'product': product,
+                    'first_revenue': first_revenue,
+                    'second_revenue': second_revenue,
+                    'total_revenue': total_revenue
+                })
+            
+            revenue_df = pd.DataFrame(revenue_by_product)
+            fig = px.pie(revenue_df, values='total_revenue', names='product', 
+                         color_discrete_sequence=px.colors.qualitative.Set3)
+            fig.update_layout(plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
+                             font=dict(color='white'))
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("Nenhum dado de produção disponível.")
+        st.markdown('</div>', unsafe_allow_html=True)
+    
+    with col2:
+        st.markdown('<div class="card">', unsafe_allow_html=True)
+        st.subheader("Análise de Qualidade por Cultura")
+        
+        if not filtered_df.empty:
+            quality_data = []
+            for product in filtered_df['product'].unique():
+                product_data = filtered_df[filtered_df['product'] == product]
+                total = product_data['first_quality'].sum() + product_data['second_quality'].sum()
+                first_percent = (product_data['first_quality'].sum() / total * 100) if total > 0 else 0
+                second_percent = (product_data['second_quality'].sum() / total * 100) if total > 0 else 0
+                
+                quality_data.append({
+                    'product': product,
+                    '1ª Qualidade': first_percent,
+                    '2ª Qualidade': second_percent
+                })
+            
+            quality_df = pd.DataFrame(quality_data)
+            fig = px.bar(quality_df, x='product', y=['1ª Qualidade', '2ª Qualidade'], 
+                         barmode='stack', color_discrete_sequence=['#2ecc71', '#f1c40f'])
+            fig.update_layout(plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
+                             font=dict(color='white'), yaxis_title="Percentual (%)")
+            st.plotly_chart(fig, use_container_width=True)
+        elif not productions_df.empty:
+            quality_data = []
+            for product in productions_df['product'].unique():
+                product_data = productions_df[productions_df['product'] == product]
+                total = product_data['first_quality'].sum() + product_data['second_quality'].sum()
+                first_percent = (product_data['first_quality'].sum() / total * 100) if total > 0 else 0
+                second_percent = (product_data['second_quality'].sum() / total * 100) if total > 0 else 0
+                
+                quality_data.append({
+                    'product': product,
+                    '1ª Qualidade': first_percent,
+                    '2ª Qualidade': second_percent
+                })
+            
+            quality_df = pd.DataFrame(quality_data)
+            fig = px.bar(quality_df, x='product', y=['1ª Qualidade', '2ª Qualidade'], 
+                         barmode='stack', color_discrete_sequence=['#2ecc71', '#f1c40f'])
+            fig.update_layout(plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
+                             font=dict(color='white'), yaxis_title="Percentual (%)")
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("Nenhum dado de produção disponível.")
+        st.markdown('</div>', unsafe_allow_html=True)
     
     # Evolução temporal da produção
-    if not productions_df.empty:
-        st.markdown('<div class="card">', unsafe_allow_html=True)
-        st.subheader("Evolução Temporal da Produção")
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.subheader("Evolução Temporal da Produção")
+    
+    if not filtered_df.empty:
         time_series = filtered_df.copy()
         time_series['date'] = pd.to_datetime(time_series['date'])
         time_series = time_series.groupby('date')[['first_quality', 'second_quality']].sum().reset_index()
@@ -737,7 +613,75 @@ def show_dashboard():
         fig.update_layout(plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
                          font=dict(color='white'), yaxis_title="Caixas")
         st.plotly_chart(fig, use_container_width=True)
-        st.markdown('</div>', unsafe_allow_html=True)
+    elif not productions_df.empty:
+        time_series = productions_df.copy()
+        time_series['date'] = pd.to_datetime(time_series['date'])
+        time_series = time_series.groupby('date')[['first_quality', 'second_quality']].sum().reset_index()
+        
+        fig = px.line(time_series, x='date', y=['first_quality', 'second_quality'],
+                     color_discrete_sequence=['#2ecc71', '#f1c40f'])
+        fig.update_layout(plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
+                         font=dict(color='white'), yaxis_title="Caixas")
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("Nenhum dado de produção disponível.")
+    st.markdown('</div>', unsafe_allow_html=True)
+    
+    # Novo gráfico de correlação com clima
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.subheader("Correlação com Condições Climáticas")
+    
+    if not productions_df.empty and 'temperature' in productions_df.columns and 'humidity' in productions_df.columns:
+        # Preparar dados para o gráfico de radar
+        climate_data = productions_df[['temperature', 'humidity', 'rain', 'first_quality']].copy()
+        climate_data = climate_data.dropna()
+        
+        if not climate_data.empty:
+            # Agrupar por faixas de temperatura e umidade
+            climate_data['temp_range'] = pd.cut(climate_data['temperature'], bins=5)
+            climate_data['humidity_range'] = pd.cut(climate_data['humidity'], bins=5)
+            
+            # Calcular produção média por faixa
+            temp_production = climate_data.groupby('temp_range')['first_quality'].mean().reset_index()
+            humidity_production = climate_data.groupby('humidity_range')['first_quality'].mean().reset_index()
+            
+            # Criar gráfico de radar
+            fig = go.Figure()
+            
+            fig.add_trace(go.Scatterpolar(
+                r=temp_production['first_quality'].values,
+                theta=temp_production['temp_range'].astype(str).values,
+                fill='toself',
+                name='Temperatura',
+                line_color='#2ecc71'
+            ))
+            
+            fig.add_trace(go.Scatterpolar(
+                r=humidity_production['first_quality'].values,
+                theta=humidity_production['humidity_range'].astype(str).values,
+                fill='toself',
+                name='Umidade',
+                line_color='#3498db'
+            ))
+            
+            fig.update_layout(
+                polar=dict(
+                    radialaxis=dict(
+                        visible=True,
+                        range=[0, max(temp_production['first_quality'].max(), humidity_production['first_quality'].max()) * 1.1]
+                    )),
+                showlegend=True,
+                plot_bgcolor='rgba(0,0,0,0)', 
+                paper_bgcolor='rgba(0,0,0,0)',
+                font=dict(color='white')
+            )
+            
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("Dados insuficientes para análise climática.")
+    else:
+        st.info("Nenhum dado climático disponível para análise.")
+    st.markdown('</div>', unsafe_allow_html=True)
 
 # ================================
 # PÁGINA DE CADASTRO DE PRODUÇÃO
@@ -827,6 +771,74 @@ def show_production_page():
                         st.rerun()
                     else:
                         st.error("Erro ao excluir registro.")
+        
+        # Adicionar botão para baixar dados em Excel
+        st.markdown("---")
+        st.subheader("Exportar Dados")
+        
+        # Filtrar dados para exportação
+        min_date = pd.to_datetime(productions_df['date']).min().date()
+        max_date = pd.to_datetime(productions_df['date']).max().date()
+        
+        export_date_range = st.date_input(
+            "Período para Exportação",
+            value=(min_date, max_date),
+            min_value=min_date,
+            max_value=max_date,
+            key="export_date_range"
+        )
+        
+        try:
+            export_start_date, export_end_date = export_date_range
+        except:
+            export_start_date, export_end_date = min_date, max_date
+        
+        # Filtrar dados para exportação
+        export_df = productions_df[
+            (pd.to_datetime(productions_df['date']).dt.date >= export_start_date) &
+            (pd.to_datetime(productions_df['date']).dt.date <= export_end_date)
+        ]
+        
+        if not export_df.empty:
+            # Criar Excel em memória
+            output = io.BytesIO()
+            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                export_df.to_excel(writer, sheet_name='Produções', index=False)
+                
+                # Adicionar formatação
+                workbook = writer.book
+                worksheet = writer.sheets['Produções']
+                
+                # Formatar cabeçalhos
+                header_format = workbook.add_format({
+                    'bold': True,
+                    'text_wrap': True,
+                    'valign': 'top',
+                    'fg_color': '#2d5016',
+                    'font_color': 'white',
+                    'border': 1
+                })
+                
+                # Aplicar formatação aos cabeçalhos
+                for col_num, value in enumerate(export_df.columns.values):
+                    worksheet.write(0, col_num, value, header_format)
+                
+                # Ajustar largura das colunas
+                for idx, col in enumerate(export_df.columns):
+                    max_len = max(export_df[col].astype(str).map(len).max(), len(col)) + 2
+                    worksheet.set_column(idx, idx, max_len)
+            
+            output.seek(0)
+            
+            # Botão de download
+            st.download_button(
+                label="📥 Baixar Dados em Excel",
+                data=output,
+                file_name=f"producoes_{export_start_date}_{export_end_date}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+        else:
+            st.warning("Nenhum dado disponível para o período selecionado.")
 
 # ================================
 # PÁGINA DE CADASTRO DE INSUMOS
@@ -876,6 +888,74 @@ def show_inputs_page():
     if not inputs_df.empty:
         st.subheader("Insumos Recentes")
         st.dataframe(inputs_df.tail(10), use_container_width=True)
+        
+        # Adicionar botão para baixar dados em Excel
+        st.markdown("---")
+        st.subheader("Exportar Dados")
+        
+        # Filtrar dados para exportação
+        min_date = pd.to_datetime(inputs_df['date']).min().date()
+        max_date = pd.to_datetime(inputs_df['date']).max().date()
+        
+        export_date_range = st.date_input(
+            "Período para Exportação",
+            value=(min_date, max_date),
+            min_value=min_date,
+            max_value=max_date,
+            key="export_inputs_date_range"
+        )
+        
+        try:
+            export_start_date, export_end_date = export_date_range
+        except:
+            export_start_date, export_end_date = min_date, max_date
+        
+        # Filtrar dados para exportação
+        export_df = inputs_df[
+            (pd.to_datetime(inputs_df['date']).dt.date >= export_start_date) &
+            (pd.to_datetime(inputs_df['date']).dt.date <= export_end_date)
+        ]
+        
+        if not export_df.empty:
+            # Criar Excel em memória
+            output = io.BytesIO()
+            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                export_df.to_excel(writer, sheet_name='Insumos', index=False)
+                
+                # Adicionar formatação
+                workbook = writer.book
+                worksheet = writer.sheets['Insumos']
+                
+                # Formatar cabeçalhos
+                header_format = workbook.add_format({
+                    'bold': True,
+                    'text_wrap': True,
+                    'valign': 'top',
+                    'fg_color': '#2d5016',
+                    'font_color': 'white',
+                    'border': 1
+                })
+                
+                # Aplicar formatação aos cabeçalhos
+                for col_num, value in enumerate(export_df.columns.values):
+                    worksheet.write(0, col_num, value, header_format)
+                
+                # Ajustar largura das colunas
+                for idx, col in enumerate(export_df.columns):
+                    max_len = max(export_df[col].astype(str).map(len).max(), len(col)) + 2
+                    worksheet.set_column(idx, idx, max_len)
+            
+            output.seek(0)
+            
+            # Botão de download
+            st.download_button(
+                label="📥 Baixar Dados em Excel",
+                data=output,
+                file_name=f"insumos_{export_start_date}_{export_end_date}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+        else:
+            st.warning("Nenhum dado disponível para o período selecionado.")
 
 # ================================
 # PÁGINA DE CONFIGURAÇÕES
@@ -988,6 +1068,45 @@ def show_reports_page():
         
         # Dados detalhados
         st.dataframe(filtered_prod, use_container_width=True)
+        
+        # Botão para exportar
+        if st.button("Exportar para Excel"):
+            # Criar Excel em memória
+            output = io.BytesIO()
+            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                filtered_prod.to_excel(writer, sheet_name='Produções', index=False)
+                
+                # Adicionar formatação
+                workbook = writer.book
+                worksheet = writer.sheets['Produções']
+                
+                # Formatar cabeçalhos
+                header_format = workbook.add_format({
+                    'bold': True,
+                    'text_wrap': True,
+                    'valign': 'top',
+                    'fg_color': '#2d5016',
+                    'font_color': 'white',
+                    'border': 1
+                })
+                
+                # Aplicar formatação aos cabeçalhos
+                for col_num, value in enumerate(filtered_prod.columns.values):
+                    worksheet.write(0, col_num, value, header_format)
+                
+                # Ajustar largura das colunas
+                for idx, col in enumerate(filtered_prod.columns):
+                    max_len = max(filtered_prod[col].astype(str).map(len).max(), len(col)) + 2
+                    worksheet.set_column(idx, idx, max_len)
+            
+            output.seek(0)
+            
+            st.download_button(
+                label="Baixar Excel",
+                data=output,
+                file_name=f"relatorio_producao_{start_date}_{end_date}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
     
     elif report_type == "Resumo Financeiro":
         st.header("Relatório Financeiro")
@@ -1003,6 +1122,202 @@ def show_reports_page():
             st.metric("Lucro Líquido", f"R$ {financials['profit']:,.2f}")
         with col4:
             st.metric("Margem de Lucro", f"{financials['profit_margin']:.1f}%")
+        
+        # Detalhamento por produto
+        st.subheader("Receita por Produto")
+        price_config = load_price_config()
+        revenue_by_product = []
+        
+        for product in filtered_prod['product'].unique():
+            product_data = filtered_prod[filtered_prod['product'] == product]
+            product_price = price_config[price_config['product'] == product]
+            
+            if not product_price.empty:
+                first_price = product_price['first_quality_price'].values[0]
+                second_price = product_price['second_quality_price'].values[0]
+            else:
+                first_price, second_price = 10.0, 5.0
+            
+            first_revenue = product_data['first_quality'].sum() * first_price
+            second_revenue = product_data['second_quality'].sum() * second_price
+            
+            revenue_by_product.append({
+                'Produto': product,
+                '1ª Qualidade (R$)': first_revenue,
+                '2ª Qualidade (R$)': second_revenue,
+                'Receita Total (R$)': first_revenue + second_revenue
+            })
+        
+        revenue_df = pd.DataFrame(revenue_by_product)
+        st.dataframe(revenue_df, use_container_width=True)
+        
+        # Botão para exportar
+        if st.button("Exportar para Excel"):
+            # Criar Excel em memória
+            output = io.BytesIO()
+            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                revenue_df.to_excel(writer, sheet_name='Receitas', index=False)
+                
+                # Adicionar formatação
+                workbook = writer.book
+                worksheet = writer.sheets['Receitas']
+                
+                # Formatar cabeçalhos
+                header_format = workbook.add_format({
+                    'bold': True,
+                    'text_wrap': True,
+                    'valign': 'top',
+                    'fg_color': '#2d5016',
+                    'font_color': 'white',
+                    'border': 1
+                })
+                
+                # Aplicar formatação aos cabeçalhos
+                for col_num, value in enumerate(revenue_df.columns.values):
+                    worksheet.write(0, col_num, value, header_format)
+                
+                # Ajustar largura das colunas
+                for idx, col in enumerate(revenue_df.columns):
+                    max_len = max(revenue_df[col].astype(str).map(len).max(), len(col)) + 2
+                    worksheet.set_column(idx, idx, max_len)
+            
+            output.seek(0)
+            
+            st.download_button(
+                label="Baixar Excel",
+                data=output,
+                file_name=f"relatorio_financeiro_{start_date}_{end_date}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+    
+    elif report_type == "Análise de Qualidade":
+        st.header("Análise de Qualidade")
+        
+        quality_data = []
+        for product in filtered_prod['product'].unique():
+            product_data = filtered_prod[filtered_prod['product'] == product]
+            total = product_data['first_quality'].sum() + product_data['second_quality'].sum()
+            
+            if total > 0:
+                first_percent = (product_data['first_quality'].sum() / total * 100)
+                second_percent = (product_data['second_quality'].sum() / total * 100)
+                
+                quality_data.append({
+                    'Produto': product,
+                    'Total Caixas': total,
+                    '1ª Qualidade (%)': first_percent,
+                    '2ª Qualidade (%)': second_percent,
+                    '1ª Qualidade (cx)': product_data['first_quality'].sum(),
+                    '2ª Qualidade (cx)': product_data['second_quality'].sum()
+                })
+        
+        quality_df = pd.DataFrame(quality_data)
+        st.dataframe(quality_df, use_container_width=True)
+        
+        # Gráfico de qualidade
+        fig = px.bar(quality_df, x='Produto', y=['1ª Qualidade (cx)', '2ª Qualidade (cx)'], 
+                     barmode='stack', title="Distribuição de Qualidade por Produto",
+                     color_discrete_sequence=['#2ecc71', '#f1c40f'])
+        fig.update_layout(plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
+                         font=dict(color='white'))
+        st.plotly_chart(fig, use_container_width=True)
+        
+        # Botão para exportar
+        if st.button("Exportar para Excel"):
+            # Criar Excel em memória
+            output = io.BytesIO()
+            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                quality_df.to_excel(writer, sheet_name='Qualidade', index=False)
+                
+                # Adicionar formatação
+                workbook = writer.book
+                worksheet = writer.sheets['Qualidade']
+                
+                # Formatar cabeçalhos
+                header_format = workbook.add_format({
+                    'bold': True,
+                    'text_wrap': True,
+                    'valign': 'top',
+                    'fg_color': '#2d5016',
+                    'font_color': 'white',
+                    'border': 1
+                })
+                
+                # Aplicar formatação aos cabeçalhos
+                for col_num, value in enumerate(quality_df.columns.values):
+                    worksheet.write(0, col_num, value, header_format)
+                
+                # Ajustar largura das colunas
+                for idx, col in enumerate(quality_df.columns):
+                    max_len = max(quality_df[col].astype(str).map(len).max(), len(col)) + 2
+                    worksheet.set_column(idx, idx, max_len)
+            
+            output.seek(0)
+            
+            st.download_button(
+                label="Baixar Excel",
+                data=output,
+                file_name=f"relatorio_qualidade_{start_date}_{end_date}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+    
+    elif report_type == "Custos e Insumos":
+        st.header("Análise de Custos e Insumos")
+        
+        if not filtered_inputs.empty:
+            # Custos por tipo
+            costs_by_type = filtered_inputs.groupby('type')['cost'].sum().reset_index()
+            fig = px.pie(costs_by_type, values='cost', names='type', 
+                         title="Distribuição de Custos por Tipo",
+                         color_discrete_sequence=px.colors.qualitative.Set3)
+            fig.update_layout(plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
+                             font=dict(color='white'))
+            st.plotly_chart(fig, use_container_width=True)
+            
+            # Tabela de custos detalhada
+            st.subheader("Detalhamento de Custos")
+            st.dataframe(filtered_inputs, use_container_width=True)
+            
+            # Botão para exportar
+            if st.button("Exportar para Excel"):
+                # Criar Excel em memória
+                output = io.BytesIO()
+                with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                    filtered_inputs.to_excel(writer, sheet_name='Custos', index=False)
+                    
+                    # Adicionar formatação
+                    workbook = writer.book
+                    worksheet = writer.sheets['Custos']
+                    
+                    # Formatar cabeçalhos
+                    header_format = workbook.add_format({
+                        'bold': True,
+                        'text_wrap': True,
+                        'valign': 'top',
+                        'fg_color': '#2d5016',
+                        'font_color': 'white',
+                        'border': 1
+                    })
+                    
+                    # Aplicar formatação aos cabeçalhos
+                    for col_num, value in enumerate(filtered_inputs.columns.values):
+                        worksheet.write(0, col_num, value, header_format)
+                    
+                    # Ajustar largura das colunas
+                    for idx, col in enumerate(filtered_inputs.columns):
+                        max_len = max(filtered_inputs[col].astype(str).map(len).max(), len(col)) + 2
+                        worksheet.set_column(idx, idx, max_len)
+                
+                output.seek(0)
+                
+                st.download_button(
+                    label="Baixar Excel",
+                    data=output,
+                    file_name=f"relatorio_custos_{start_date}_{end_date}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+        else:
+            st.info("Nenhum dado de insumos/custos para o período selecionado.")
 
 # ================================
 # FUNÇÃO PRINCIPAL
@@ -1017,13 +1332,13 @@ def main():
         st.markdown("**Sistema de Gestão Agrícola**")
         st.markdown("---")
         
-        # Menu de navegação - ADICIONADO ADMINISTRATIVO
-        menu_options = ["📊 Dashboard", "📝 Produção", "💰 Insumos", "📋 Relatórios", "⚙️ Configurações", "🔧 Administrativo"]
+        # Menu de navegação
+        menu_options = ["📊 Dashboard", "📝 Produção", "💰 Insumos", "📋 Relatórios", "⚙️ Configurações"]
         
         selected = option_menu(
             menu_title="Navegação",
             options=menu_options,
-            icons=["speedometer2", "pencil", "cash-coin", "file-text", "gear", "tools"],
+            icons=["speedometer2", "pencil", "cash-coin", "file-text", "gear"],
             menu_icon="cast",
             default_index=0,
             styles={
@@ -1034,7 +1349,7 @@ def main():
             }
         )
     
-    # Navegação entre páginas - ADICIONADO ADMINISTRATIVO
+    # Navegação entre páginas
     if selected == "📊 Dashboard":
         show_dashboard()
     elif selected == "📝 Produção":
@@ -1045,8 +1360,6 @@ def main():
         show_reports_page()
     elif selected == "⚙️ Configurações":
         show_settings_page()
-    elif selected == "🔧 Administrativo":
-        show_admin_page()
 
 # ================================
 # EXECUÇÃO DO APLICATIVO
