@@ -997,7 +997,7 @@ def show_settings_page():
                     st.error("Erro ao salvar preços. Verifique a conexão com o banco de dados.")
 
 # ================================
-# PÁGINA DE RELATÓRIOS
+# PÁGINA DE RELATÓRIOS (REFATORADA)
 # ================================
 def show_reports_page():
     st.title("📋 Relatórios")
@@ -1009,7 +1009,7 @@ def show_reports_page():
         st.warning("Nenhum dado disponível para gerar relatórios.")
         return
     
-    # Filtros para relatórios
+    # Filtros para relatórios - REFATORADO COM MAIS FILTROS
     st.sidebar.header("Filtros do Relatório")
     
     min_date = pd.to_datetime(productions_df['date']).min().date()
@@ -1022,10 +1022,29 @@ def show_reports_page():
         max_value=max_date
     )
     
+    # NOVOS FILTROS ADICIONADOS
+    # Filtro por local
+    all_locations = productions_df['local'].unique().tolist()
+    selected_locations = st.sidebar.multiselect(
+        "Filtrar por Local",
+        options=all_locations,
+        default=all_locations,
+        help="Selecione os locais para filtrar"
+    )
+    
+    # Filtro por cultura
+    all_products = productions_df['product'].unique().tolist()
+    selected_products = st.sidebar.multiselect(
+        "Filtrar por Cultura",
+        options=all_products,
+        default=all_products,
+        help="Selecione as culturas para filtrar"
+    )
+    
     # Tipo de relatório
     report_type = st.sidebar.selectbox(
         "Tipo de Relatório",
-        ["Produção Detalhada", "Resumo Financeiro", "Análise de Qualidade", "Custos e Insumos"]
+        ["Produção Detalhada", "Resumo Financeiro", "Análise de Qualidade", "Custos e Insumos", "Análise por Local"]
     )
     
     try:
@@ -1033,10 +1052,12 @@ def show_reports_page():
     except:
         start_date, end_date = min_date, max_date
     
-    # Filtrar dados
+    # Filtrar dados - REFATORADO COM NOVOS FILTROS
     filtered_prod = productions_df[
         (pd.to_datetime(productions_df['date']).dt.date >= start_date) &
-        (pd.to_datetime(productions_df['date']).dt.date <= end_date)
+        (pd.to_datetime(productions_df['date']).dt.date <= end_date) &
+        (productions_df['local'].isin(selected_locations)) &
+        (productions_df['product'].isin(selected_products))
     ]
     
     filtered_inputs = inputs_df[
@@ -1048,68 +1069,49 @@ def show_reports_page():
         st.warning("Nenhum dado encontrado para o período selecionado.")
         return
     
+    # Exibir resumo dos filtros aplicados
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("Resumo dos Filtros")
+    st.sidebar.write(f"**Período:** {start_date} a {end_date}")
+    st.sidebar.write(f"**Locais selecionados:** {len(selected_locations)}")
+    st.sidebar.write(f"**Culturas selecionadas:** {len(selected_products)}")
+    st.sidebar.write(f"**Registros encontrados:** {len(filtered_prod)}")
+    
     # Gerar relatório selecionado
     if report_type == "Produção Detalhada":
-        st.header("Relatório de Produção Detalhada")
-        st.write(f"Período: {start_date} a {end_date}")
+        st.header("📊 Relatório de Produção Detalhada")
+        st.write(f"**Período:** {start_date} a {end_date}")
+        st.write(f"**Locais:** {', '.join(selected_locations)}")
+        st.write(f"**Culturas:** {', '.join(selected_products)}")
         
         # Resumo estatístico
         total_first = filtered_prod['first_quality'].sum()
         total_second = filtered_prod['second_quality'].sum()
         total_boxes = total_first + total_second
         
-        col1, col2, col3 = st.columns(3)
+        col1, col2, col3, col4 = st.columns(4)
         with col1:
             st.metric("Total de Caixas", f"{total_boxes:,.0f}")
         with col2:
             st.metric("1ª Qualidade", f"{total_first:,.0f}")
         with col3:
             st.metric("2ª Qualidade", f"{total_second:,.0f}")
+        with col4:
+            st.metric("Média 1ª Qualidade", f"{(total_first/total_boxes*100 if total_boxes > 0 else 0):.1f}%")
         
         # Dados detalhados
+        st.subheader("Dados Detalhados")
         st.dataframe(filtered_prod, use_container_width=True)
         
-        # Botão para exportar
-        if st.button("Exportar para Excel"):
-            # Criar Excel em memória
-            output = io.BytesIO()
-            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                filtered_prod.to_excel(writer, sheet_name='Produções', index=False)
-                
-                # Adicionar formatação
-                workbook = writer.book
-                worksheet = writer.sheets['Produções']
-                
-                # Formatar cabeçalhos
-                header_format = workbook.add_format({
-                    'bold': True,
-                    'text_wrap': True,
-                    'valign': 'top',
-                    'fg_color': '#2d5016',
-                    'font_color': 'white',
-                    'border': 1
-                })
-                
-                # Aplicar formatação aos cabeçalhos
-                for col_num, value in enumerate(filtered_prod.columns.values):
-                    worksheet.write(0, col_num, value, header_format)
-                
-                # Ajustar largura das colunas
-                for idx, col in enumerate(filtered_prod.columns):
-                    max_len = max(filtered_prod[col].astype(str).map(len).max(), len(col)) + 2
-                    worksheet.set_column(idx, idx, max_len)
-            
-            output.seek(0)
-            
-            st.download_button(
-                label="Baixar Excel",
-                data=output,
-                file_name=f"relatorio_producao_{start_date}_{end_date}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
+        # Exportar dados
+        if st.button("📥 Exportar para Excel", key="export_detailed"):
+            export_to_excel(filtered_prod, "relatorio_producao_detalhada", start_date, end_date)
     
     elif report_type == "Resumo Financeiro":
-        st.header("Relatório Financeiro")
+        st.header("💰 Relatório Financeiro")
+        st.write(f"**Período:** {start_date} a {end_date}")
+        st.write(f"**Locais:** {', '.join(selected_locations)}")
+        st.write(f"**Culturas:** {', '.join(selected_products)}")
         
         financials = calculate_financials(filtered_prod, filtered_inputs)
         
@@ -1117,7 +1119,7 @@ def show_reports_page():
         with col1:
             st.metric("Receita Total", f"R$ {financials['total_revenue']:,.2f}")
         with col2:
-            st.metric("Custos Totals", f"R$ {financials['total_costs']:,.2f}")
+            st.metric("Custos Totais", f"R$ {financials['total_costs']:,.2f}")
         with col3:
             st.metric("Lucro Líquido", f"R$ {financials['profit']:,.2f}")
         with col4:
@@ -1140,6 +1142,7 @@ def show_reports_page():
             
             first_revenue = product_data['first_quality'].sum() * first_price
             second_revenue = product_data['second_quality'].sum() * second_price
+            total_revenue = first_revenue + second_revenue
             
             revenue_by_product.append({
                 'Produto': product,
@@ -1151,47 +1154,23 @@ def show_reports_page():
         revenue_df = pd.DataFrame(revenue_by_product)
         st.dataframe(revenue_df, use_container_width=True)
         
-        # Botão para exportar
-        if st.button("Exportar para Excel"):
-            # Criar Excel em memória
-            output = io.BytesIO()
-            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                revenue_df.to_excel(writer, sheet_name='Receitas', index=False)
-                
-                # Adicionar formatação
-                workbook = writer.book
-                worksheet = writer.sheets['Receitas']
-                
-                # Formatar cabeçalhos
-                header_format = workbook.add_format({
-                    'bold': True,
-                    'text_wrap': True,
-                    'valign': 'top',
-                    'fg_color': '#2d5016',
-                    'font_color': 'white',
-                    'border': 1
-                })
-                
-                # Aplicar formatação aos cabeçalhos
-                for col_num, value in enumerate(revenue_df.columns.values):
-                    worksheet.write(0, col_num, value, header_format)
-                
-                # Ajustar largura das colunas
-                for idx, col in enumerate(revenue_df.columns):
-                    max_len = max(revenue_df[col].astype(str).map(len).max(), len(col)) + 2
-                    worksheet.set_column(idx, idx, max_len)
-            
-            output.seek(0)
-            
-            st.download_button(
-                label="Baixar Excel",
-                data=output,
-                file_name=f"relatorio_financeiro_{start_date}_{end_date}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
+        # Gráfico de receita por produto
+        fig = px.bar(revenue_df, x='Produto', y='Receita Total (R$)', 
+                     title="Receita por Cultura",
+                     color_discrete_sequence=['#2d5016'])
+        fig.update_layout(plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
+                         font=dict(color='white'))
+        st.plotly_chart(fig, use_container_width=True)
+        
+        # Exportar dados
+        if st.button("📥 Exportar para Excel", key="export_financial"):
+            export_to_excel(revenue_df, "relatorio_financeiro", start_date, end_date)
     
     elif report_type == "Análise de Qualidade":
-        st.header("Análise de Qualidade")
+        st.header("🔍 Análise de Qualidade")
+        st.write(f"**Período:** {start_date} a {end_date}")
+        st.write(f"**Locais:** {', '.join(selected_locations)}")
+        st.write(f"**Culturas:** {', '.join(selected_products)}")
         
         quality_data = []
         for product in filtered_prod['product'].unique():
@@ -1222,47 +1201,13 @@ def show_reports_page():
                          font=dict(color='white'))
         st.plotly_chart(fig, use_container_width=True)
         
-        # Botão para exportar
-        if st.button("Exportar para Excel"):
-            # Criar Excel em memória
-            output = io.BytesIO()
-            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                quality_df.to_excel(writer, sheet_name='Qualidade', index=False)
-                
-                # Adicionar formatação
-                workbook = writer.book
-                worksheet = writer.sheets['Qualidade']
-                
-                # Formatar cabeçalhos
-                header_format = workbook.add_format({
-                    'bold': True,
-                    'text_wrap': True,
-                    'valign': 'top',
-                    'fg_color': '#2d5016',
-                    'font_color': 'white',
-                    'border': 1
-                })
-                
-                # Aplicar formatação aos cabeçalhos
-                for col_num, value in enumerate(quality_df.columns.values):
-                    worksheet.write(0, col_num, value, header_format)
-                
-                # Ajustar largura das colunas
-                for idx, col in enumerate(quality_df.columns):
-                    max_len = max(quality_df[col].astype(str).map(len).max(), len(col)) + 2
-                    worksheet.set_column(idx, idx, max_len)
-            
-            output.seek(0)
-            
-            st.download_button(
-                label="Baixar Excel",
-                data=output,
-                file_name=f"relatorio_qualidade_{start_date}_{end_date}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
+        # Exportar dados
+        if st.button("📥 Exportar para Excel", key="export_quality"):
+            export_to_excel(quality_df, "relatorio_qualidade", start_date, end_date)
     
     elif report_type == "Custos e Insumos":
-        st.header("Análise de Custos e Insumos")
+        st.header("💸 Análise de Custos e Insumos")
+        st.write(f"**Período:** {start_date} a {end_date}")
         
         if not filtered_inputs.empty:
             # Custos por tipo
@@ -1278,46 +1223,87 @@ def show_reports_page():
             st.subheader("Detalhamento de Custos")
             st.dataframe(filtered_inputs, use_container_width=True)
             
-            # Botão para exportar
-            if st.button("Exportar para Excel"):
-                # Criar Excel em memória
-                output = io.BytesIO()
-                with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                    filtered_inputs.to_excel(writer, sheet_name='Custos', index=False)
-                    
-                    # Adicionar formatação
-                    workbook = writer.book
-                    worksheet = writer.sheets['Custos']
-                    
-                    # Formatar cabeçalhos
-                    header_format = workbook.add_format({
-                        'bold': True,
-                        'text_wrap': True,
-                        'valign': 'top',
-                        'fg_color': '#2d5016',
-                        'font_color': 'white',
-                        'border': 1
-                    })
-                    
-                    # Aplicar formatação aos cabeçalhos
-                    for col_num, value in enumerate(filtered_inputs.columns.values):
-                        worksheet.write(0, col_num, value, header_format)
-                    
-                    # Ajustar largura das colunas
-                    for idx, col in enumerate(filtered_inputs.columns):
-                        max_len = max(filtered_inputs[col].astype(str).map(len).max(), len(col)) + 2
-                        worksheet.set_column(idx, idx, max_len)
-                
-                output.seek(0)
-                
-                st.download_button(
-                    label="Baixar Excel",
-                    data=output,
-                    file_name=f"relatorio_custos_{start_date}_{end_date}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
+            # Exportar dados
+            if st.button("📥 Exportar para Excel", key="export_costs"):
+                export_to_excel(filtered_inputs, "relatorio_custos", start_date, end_date)
         else:
             st.info("Nenhum dado de insumos/custos para o período selecionado.")
+    
+    elif report_type == "Análise por Local":
+        st.header("🏭 Análise de Produção por Local")
+        st.write(f"**Período:** {start_date} a {end_date}")
+        st.write(f"**Culturas:** {', '.join(selected_products)}")
+        
+        # Análise por local
+        production_by_location = filtered_prod.groupby('local').agg({
+            'first_quality': 'sum',
+            'second_quality': 'sum',
+            'product': 'count'
+        }).reset_index()
+        
+        production_by_location['total'] = production_by_location['first_quality'] + production_by_location['second_quality']
+        production_by_location['percentual_1a'] = (production_by_location['first_quality'] / production_by_location['total'] * 100).round(1)
+        
+        st.subheader("Produção por Local")
+        st.dataframe(production_by_location, use_container_width=True)
+        
+        # Gráfico de produção por local
+        fig = px.bar(production_by_location, x='local', y='total', 
+                     title="Produção Total por Local",
+                     color='total', color_continuous_scale='viridis')
+        fig.update_layout(plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
+                         font=dict(color='white'))
+        st.plotly_chart(fig, use_container_width=True)
+        
+        # Gráfico de qualidade por local
+        fig = px.bar(production_by_location, x='local', y=['first_quality', 'second_quality'], 
+                     barmode='stack', title="Qualidade por Local",
+                     color_discrete_sequence=['#2ecc71', '#f1c40f'])
+        fig.update_layout(plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
+                         font=dict(color='white'))
+        st.plotly_chart(fig, use_container_width=True)
+        
+        # Exportar dados
+        if st.button("📥 Exportar para Excel", key="export_location"):
+            export_to_excel(production_by_location, "relatorio_por_local", start_date, end_date)
+
+# Função auxiliar para exportar dados para Excel
+def export_to_excel(dataframe, report_name, start_date, end_date):
+    """Exporta dataframe para Excel"""
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        dataframe.to_excel(writer, sheet_name='Relatório', index=False)
+        
+        workbook = writer.book
+        worksheet = writer.sheets['Relatório']
+        
+        # Formatar cabeçalhos
+        header_format = workbook.add_format({
+            'bold': True,
+            'text_wrap': True,
+            'valign': 'top',
+            'fg_color': '#2d5016',
+            'font_color': 'white',
+            'border': 1
+        })
+        
+        # Aplicar formatação aos cabeçalhos
+        for col_num, value in enumerate(dataframe.columns.values):
+            worksheet.write(0, col_num, value, header_format)
+        
+        # Ajustar largura das colunas
+        for idx, col in enumerate(dataframe.columns):
+            max_len = max(dataframe[col].astype(str).map(len).max(), len(col)) + 2
+            worksheet.set_column(idx, idx, max_len)
+    
+    output.seek(0)
+    
+    st.download_button(
+        label="⬇️ Baixar Arquivo Excel",
+        data=output,
+        file_name=f"{report_name}_{start_date}_{end_date}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
 
 # ================================
 # FUNÇÃO PRINCIPAL
