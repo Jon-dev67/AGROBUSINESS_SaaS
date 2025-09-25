@@ -60,18 +60,6 @@ def apply_dark_theme():
         box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
         border-left: 4px solid #2d5016;
     }
-    .oracle-message {
-        background-color: #2d5016;
-        padding: 15px;
-        border-radius: 10px;
-        margin: 10px 0;
-    }
-    .user-message {
-        background-color: #1a3d5c;
-        padding: 15px;
-        border-radius: 10px;
-        margin: 10px 0;
-    }
     h1, h2, h3, h4, h5, h6 {
         color: #FAFAFA;
     }
@@ -90,7 +78,6 @@ apply_dark_theme()
 # CONSTANTES E CONFIGURAÇÕES
 # ================================
 API_KEY = "eef20bca4e6fb1ff14a81a3171de5cec"
-DEEPSEEK_API_KEY = "sk-0ad4c39ad4c14aa09a0decc40b60e7d3"
 DEFAULT_CITY = "Londrina"
 
 # Configurações do PostgreSQL
@@ -101,131 +88,6 @@ DB_CONFIG = {
     "password": "gl5pErtk8tC2vqFLfswn7B7ocoxK7gk5",
     "port": "5432"
 }
-
-# ================================
-# SISTEMA ORÁCULO (AI ASSISTANT)
-# ================================
-class AgroOracle:
-    def __init__(self, api_key):
-        self.api_key = api_key
-        self.base_url = "https://api.deepseek.com/v1/chat/completions"
-    
-    def get_database_context(self):
-        """Obtém contexto completo do banco de dados para o oráculo"""
-        productions_df = load_productions()
-        inputs_df = load_inputs()
-        price_config = load_price_config()
-        
-        context = "CONTEXTO DO BANCO DE DADOS AGROGESTÃO:\n\n"
-        
-        # Contexto das produções
-        if not productions_df.empty:
-            context += "PRODUÇÕES REGISTRADAS:\n"
-            context += f"Total de registros: {len(productions_df)}\n"
-            context += f"Período: {productions_df['date'].min()} até {productions_df['date'].max()}\n"
-            context += f"Culturas: {', '.join(productions_df['product'].unique())}\n"
-            context += f"Locais: {', '.join(productions_df['local'].unique())}\n"
-            
-            total_first = productions_df['first_quality'].sum()
-            total_second = productions_df['second_quality'].sum()
-            context += f"Produção total: {total_first + total_second:.0f} caixas ({total_first:.0f} 1ª qualidade, {total_second:.0f} 2ª qualidade)\n\n"
-        else:
-            context += "PRODUÇÕES: Nenhum dado registrado ainda.\n\n"
-        
-        # Contexto dos insumos
-        if not inputs_df.empty:
-            context += "INSUMOS REGISTRADOS:\n"
-            context += f"Total de registros: {len(inputs_df)}\n"
-            context += f"Tipos: {', '.join(inputs_df['type'].unique())}\n"
-            context += f"Custo total: R$ {inputs_df['cost'].sum():.2f}\n\n"
-        else:
-            context += "INSUMOS: Nenhum dado registrado ainda.\n\n"
-        
-        # Contexto dos preços
-        if not price_config.empty:
-            context += "PREÇOS CONFIGURADOS:\n"
-            for _, row in price_config.iterrows():
-                context += f"{row['product']}: 1ª qualidade R$ {row['first_quality_price']:.2f}, 2ª qualidade R$ {row['second_quality_price']:.2f}\n"
-            context += "\n"
-        
-        return context
-    
-    def analyze_financials(self):
-        """Análise financeira para o oráculo"""
-        productions_df = load_productions()
-        inputs_df = load_inputs()
-        financials = calculate_financials(productions_df, inputs_df)
-        
-        analysis = "ANÁLISE FINANCEIRA:\n"
-        analysis += f"Receita Total: R$ {financials['total_revenue']:.2f}\n"
-        analysis += f"Custos Totais: R$ {financials['total_costs']:.2f}\n"
-        analysis += f"Lucro Líquido: R$ {financials['profit']:.2f}\n"
-        analysis += f"Margem de Lucro: {financials['profit_margin']:.1f}%\n"
-        
-        if financials['profit_margin'] > 20:
-            analysis += "✅ Situação financeira: Excelente\n"
-        elif financials['profit_margin'] > 10:
-            analysis += "⚠️ Situação financeira: Boa\n"
-        else:
-            analysis += "❌ Situação financeira: Precisa de atenção\n"
-        
-        return analysis
-    
-    def query_oracle(self, user_message):
-        """Consulta o oráculo com a mensagem do usuário"""
-        try:
-            # Obter contexto do banco
-            db_context = self.get_database_context()
-            financial_analysis = self.analyze_financials()
-            
-            system_prompt = f"""Você é o Oráculo AgroGestão, um especialista em análise agrícola com acesso completo aos dados do sistema.
-
-{db_context}
-{financial_analysis}
-
-INSTRUÇÕES:
-- Seja natural e conversacional, como um especialista agrícola
-- Use os dados do banco para embasar suas respostas
-- Forneça insights práticos e acionáveis
-- Quando relevante, mencione números específicos dos dados
-- Se não souber algo baseado nos dados, seja honesto
-- Mantenha as respostas claras e úteis para o gestor agrícola
-
-Exemplos de como responder:
-- "Analisando seus dados, vejo que sua produção de tomate..."
-- "Com base nos registros, sua receita total está em..."
-- "Observando seus custos, sugiro atenção com..."
-
-Agora responda a pergunta do usuário:"""
-            
-            headers = {
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {self.api_key}"
-            }
-            
-            payload = {
-                "model": "deepseek-chat",
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_message}
-                ],
-                "temperature": 0.7,
-                "max_tokens": 1000
-            }
-            
-            response = requests.post(self.base_url, headers=headers, json=payload, timeout=30)
-            
-            if response.status_code == 200:
-                result = response.json()
-                return result['choices'][0]['message']['content']
-            else:
-                return f"Erro na API: {response.status_code}. {response.text}"
-                
-        except Exception as e:
-            return f"Erro ao consultar o oráculo: {str(e)}"
-
-# Inicializar o oráculo
-oracle = AgroOracle(DEEPSEEK_API_KEY)
 
 # ================================
 # FUNÇÕES DE BANCO DE DADOS (POSTGRESQL)
@@ -289,13 +151,6 @@ def init_db():
                       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                       UNIQUE(product))''')
         
-        # Tabela de conversas com o oráculo
-        c.execute('''CREATE TABLE IF NOT EXISTS oracle_conversations
-                     (id SERIAL PRIMARY KEY,
-                      user_message TEXT NOT NULL,
-                      oracle_response TEXT NOT NULL,
-                      timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
-        
         # Verificar se a tabela price_config está vazia
         c.execute("SELECT COUNT(*) FROM price_config")
         if c.fetchone()[0] == 0:
@@ -311,6 +166,7 @@ def init_db():
                          (product, first_price, second_price))
         
         conn.commit()
+        st.success("Banco de dados inicializado com sucesso!")
     except Exception as e:
         st.error(f"Erro ao inicializar banco de dados: {str(e)}")
     finally:
@@ -425,39 +281,6 @@ def save_price_config(product, first_price, second_price):
     finally:
         conn.close()
 
-def save_conversation(user_message, oracle_response):
-    """Salva a conversa com o oráculo no banco"""
-    conn = get_db_connection()
-    if conn is None:
-        return False
-    
-    try:
-        c = conn.cursor()
-        c.execute("INSERT INTO oracle_conversations (user_message, oracle_response) VALUES (%s, %s)",
-                  (user_message, oracle_response))
-        conn.commit()
-        return True
-    except Exception as e:
-        st.error(f"Erro ao salvar conversa: {str(e)}")
-        return False
-    finally:
-        conn.close()
-
-def load_conversations(limit=10):
-    """Carrega histórico de conversas"""
-    conn = get_db_connection()
-    if conn is None:
-        return pd.DataFrame()
-    
-    try:
-        df = pd.read_sql_query(f"SELECT * FROM oracle_conversations ORDER BY timestamp DESC LIMIT {limit}", conn)
-        return df
-    except Exception as e:
-        st.error(f"Erro ao carregar conversas: {str(e)}")
-        return pd.DataFrame()
-    finally:
-        conn.close()
-
 # ================================
 # FUNÇÕES DE API CLIMÁTICA
 # ================================
@@ -479,8 +302,10 @@ def get_weather_data(city):
                 "icon": data["weather"][0]["icon"]
             }
         else:
+            st.error(f"Erro ao buscar dados climáticos: {response.status_code}")
             return None
     except Exception as e:
+        st.error(f"Erro de conexão com a API climática: {str(e)}")
         return None
 
 # ================================
@@ -509,6 +334,7 @@ def calculate_financials(productions_df, inputs_df):
             first_price = price_row['first_quality_price'].values[0]
             second_price = price_row['second_quality_price'].values[0]
         else:
+            # Preços padrão se não encontrado
             first_price = 10.0
             second_price = 5.0
         
@@ -542,124 +368,6 @@ def calculate_financials(productions_df, inputs_df):
         "profit": profit,
         "profit_margin": profit_margin
     }
-
-# ================================
-# PÁGINA DO ORÁCULO AGRO
-# ================================
-def show_oracle_page():
-    st.title("🔮 Oráculo AgroGestão")
-    st.markdown("💬 Converse com nosso especialista AI que conhece todos os seus dados!")
-    
-    # Inicializar histórico de conversa na session state
-    if 'conversation_history' not in st.session_state:
-        st.session_state.conversation_history = []
-    
-    # Carregar conversas anteriores
-    with st.expander("📜 Histórico de Conversas Anteriores"):
-        conversations_df = load_conversations(5)
-        if not conversations_df.empty:
-            for _, conv in conversations_df.iterrows():
-                st.markdown(f"**{conv['timestamp']}**")
-                st.markdown(f"<div class='user-message'><strong>Você:</strong> {conv['user_message']}</div>", unsafe_allow_html=True)
-                st.markdown(f"<div class='oracle-message'><strong>Oráculo:</strong> {conv['oracle_response']}</div>", unsafe_allow_html=True)
-                st.markdown("---")
-        else:
-            st.info("Nenhuma conversa anterior encontrada.")
-    
-    # Sugestões de perguntas
-    st.subheader("💡 Sugestões de Perguntas")
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        if st.button("📊 Resumo da produção"):
-            st.session_state.user_question = "Me dê um resumo geral da minha produção"
-        if st.button("💰 Situação financeira"):
-            st.session_state.user_question = "Como está minha situação financeira?"
-    
-    with col2:
-        if st.button("🌱 Melhor cultura"):
-            st.session_state.user_question = "Qual é minha cultura mais rentável?"
-        if st.button("⚠️ Problemas"):
-            st.session_state.user_question = "Há algum problema que devo me preocupar?"
-    
-    with col3:
-        if st.button("📈 Recomendações"):
-            st.session_state.user_question = "Quais recomendações você tem para melhorar?"
-        if st.button("🌧️ Clima e produção"):
-            st.session_state.user_question = "Como o clima tem afetado minha produção?"
-    
-    # Área de conversação
-    st.subheader("💬 Conversa com o Oráculo")
-    
-    # Input da pergunta
-    user_question = st.text_area(
-        "Faça sua pergunta sobre seus dados agrícolas:",
-        value=st.session_state.get('user_question', ''),
-        height=100,
-        placeholder="Ex: Qual foi minha produção de tomate no último mês? Como posso melhorar meus lucros?"
-    )
-    
-    if st.button("🔮 Consultar o Oráculo", type="primary"):
-        if user_question.strip():
-            with st.spinner("🧠 O oráculo está analisando seus dados..."):
-                # Consultar o oráculo
-                response = oracle.query_oracle(user_question)
-                
-                # Salvar conversa
-                save_conversation(user_question, response)
-                
-                # Adicionar ao histórico da sessão
-                st.session_state.conversation_history.append({
-                    'question': user_question,
-                    'response': response,
-                    'timestamp': datetime.now().strftime("%H:%M:%S")
-                })
-                
-            # Exibir resposta
-            st.markdown(f"<div class='oracle-message'><strong>🔮 Oráculo Agro:</strong> {response}</div>", unsafe_allow_html=True)
-            
-            # Limpar a pergunta após enviar
-            st.session_state.user_question = ""
-            st.rerun()
-        else:
-            st.warning("Por favor, digite uma pergunta.")
-    
-    # Exibir histórico da sessão atual
-    if st.session_state.conversation_history:
-        st.subheader("🔄 Conversa Atual")
-        for i, conv in enumerate(reversed(st.session_state.conversation_history)):
-            st.markdown(f"<div class='user-message'><strong>Você ({conv['timestamp']}):</strong> {conv['question']}</div>", unsafe_allow_html=True)
-            st.markdown(f"<div class='oracle-message'><strong>Oráculo ({conv['timestamp']}):</strong> {conv['response']}</div>", unsafe_allow_html=True)
-            if i < len(st.session_state.conversation_history) - 1:
-                st.markdown("---")
-    
-    # Estatísticas rápidas do oráculo
-    st.subheader("📈 Visão Rápida dos Dados")
-    productions_df = load_productions()
-    inputs_df = load_inputs()
-    
-    if not productions_df.empty:
-        col1, col2, col3, col4 = st.columns(4)
-        
-        with col1:
-            total_boxes = productions_df['first_quality'].sum() + productions_df['second_quality'].sum()
-            st.metric("Total Produzido", f"{total_boxes:,.0f} cx")
-        
-        with col2:
-            total_first = productions_df['first_quality'].sum()
-            st.metric("1ª Qualidade", f"{total_first:,.0f} cx")
-        
-        with col3:
-            unique_products = len(productions_df['product'].unique())
-            st.metric("Culturas", f"{unique_products}")
-        
-        with col4:
-            unique_locations = len(productions_df['local'].unique())
-            st.metric("Locais", f"{unique_locations}")
-    
-    if not inputs_df.empty:
-        total_costs = inputs_df['cost'].sum()
-        st.metric("Custos Totais", f"R$ {total_costs:,.2f}")
 
 # ================================
 # DASHBOARD PRINCIPAL
@@ -742,14 +450,7 @@ def show_dashboard():
         st.metric("Lucro Líquido", f"R$ {financials['profit']:,.2f}", f"{financials['profit_margin']:.1f}%")
         st.markdown('</div>', unsafe_allow_html=True)
     
-    # Quick access to Oracle
-    st.sidebar.markdown("---")
-    st.sidebar.subheader("🔮 Oráculo Agro")
-    if st.sidebar.button("Consultar o Oráculo"):
-        st.session_state.menu_selection = "🔮 Oráculo"
-        st.rerun()
-    
-    # Gráficos (mantido igual ao original)
+    # Gráficos - Primeira linha
     col1, col2 = st.columns(2)
     
     with col1:
@@ -803,17 +504,192 @@ def show_dashboard():
         else:
             st.info("Nenhum dado de produção disponível.")
         st.markdown('</div>', unsafe_allow_html=True)
-
-    # Restante do código do dashboard mantido igual...
-    # [O restante do código do dashboard permanece exatamente como estava]
+    
+    # Gráficos - Segunda linha
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown('<div class="card">', unsafe_allow_html=True)
+        st.subheader("Receita por Cultura")
+        
+        if not productions_df.empty:
+            price_config = load_price_config()
+            revenue_by_product = []
+            
+            for product in filtered_df['product'].unique() if not filtered_df.empty else productions_df['product'].unique():
+                if not filtered_df.empty:
+                    product_data = filtered_df[filtered_df['product'] == product]
+                else:
+                    product_data = productions_df[productions_df['product'] == product]
+                    
+                product_price = price_config[price_config['product'] == product]
+                
+                if not product_price.empty:
+                    first_price = product_price['first_quality_price'].values[0]
+                    second_price = product_price['second_quality_price'].values[0]
+                else:
+                    first_price, second_price = 10.0, 5.0
+                
+                first_revenue = product_data['first_quality'].sum() * first_price
+                second_revenue = product_data['second_quality'].sum() * second_price
+                total_revenue = first_revenue + second_revenue
+                
+                revenue_by_product.append({
+                    'product': product,
+                    'first_revenue': first_revenue,
+                    'second_revenue': second_revenue,
+                    'total_revenue': total_revenue
+                })
+            
+            revenue_df = pd.DataFrame(revenue_by_product)
+            fig = px.pie(revenue_df, values='total_revenue', names='product', 
+                         color_discrete_sequence=px.colors.qualitative.Set3)
+            fig.update_layout(plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
+                             font=dict(color='white'))
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("Nenhum dado de produção disponível.")
+        st.markdown('</div>', unsafe_allow_html=True)
+    
+    with col2:
+        st.markdown('<div class="card">', unsafe_allow_html=True)
+        st.subheader("Análise de Qualidade por Cultura")
+        
+        if not filtered_df.empty:
+            quality_data = []
+            for product in filtered_df['product'].unique():
+                product_data = filtered_df[filtered_df['product'] == product]
+                total = product_data['first_quality'].sum() + product_data['second_quality'].sum()
+                first_percent = (product_data['first_quality'].sum() / total * 100) if total > 0 else 0
+                second_percent = (product_data['second_quality'].sum() / total * 100) if total > 0 else 0
+                
+                quality_data.append({
+                    'product': product,
+                    '1ª Qualidade': first_percent,
+                    '2ª Qualidade': second_percent
+                })
+            
+            quality_df = pd.DataFrame(quality_data)
+            fig = px.bar(quality_df, x='product', y=['1ª Qualidade', '2ª Qualidade'], 
+                         barmode='stack', color_discrete_sequence=['#2ecc71', '#f1c40f'])
+            fig.update_layout(plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
+                             font=dict(color='white'), yaxis_title="Percentual (%)")
+            st.plotly_chart(fig, use_container_width=True)
+        elif not productions_df.empty:
+            quality_data = []
+            for product in productions_df['product'].unique():
+                product_data = productions_df[productions_df['product'] == product]
+                total = product_data['first_quality'].sum() + product_data['second_quality'].sum()
+                first_percent = (product_data['first_quality'].sum() / total * 100) if total > 0 else 0
+                second_percent = (product_data['second_quality'].sum() / total * 100) if total > 0 else 0
+                
+                quality_data.append({
+                    'product': product,
+                    '1ª Qualidade': first_percent,
+                    '2ª Qualidade': second_percent
+                })
+            
+            quality_df = pd.DataFrame(quality_data)
+            fig = px.bar(quality_df, x='product', y=['1ª Qualidade', '2ª Qualidade'], 
+                         barmode='stack', color_discrete_sequence=['#2ecc71', '#f1c40f'])
+            fig.update_layout(plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
+                             font=dict(color='white'), yaxis_title="Percentual (%)")
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("Nenhum dado de produção disponível.")
+        st.markdown('</div>', unsafe_allow_html=True)
+    
+    # Evolução temporal da produção
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.subheader("Evolução Temporal da Produção")
+    
+    if not filtered_df.empty:
+        time_series = filtered_df.copy()
+        time_series['date'] = pd.to_datetime(time_series['date'])
+        time_series = time_series.groupby('date')[['first_quality', 'second_quality']].sum().reset_index()
+        
+        fig = px.line(time_series, x='date', y=['first_quality', 'second_quality'],
+                     color_discrete_sequence=['#2ecc71', '#f1c40f'])
+        fig.update_layout(plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
+                         font=dict(color='white'), yaxis_title="Caixas")
+        st.plotly_chart(fig, use_container_width=True)
+    elif not productions_df.empty:
+        time_series = productions_df.copy()
+        time_series['date'] = pd.to_datetime(time_series['date'])
+        time_series = time_series.groupby('date')[['first_quality', 'second_quality']].sum().reset_index()
+        
+        fig = px.line(time_series, x='date', y=['first_quality', 'second_quality'],
+                     color_discrete_sequence=['#2ecc71', '#f1c40f'])
+        fig.update_layout(plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
+                         font=dict(color='white'), yaxis_title="Caixas")
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("Nenhum dado de produção disponível.")
+    st.markdown('</div>', unsafe_allow_html=True)
+    
+    # Novo gráfico de correlação com clima
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.subheader("Correlação com Condições Climáticas")
+    
+    if not productions_df.empty and 'temperature' in productions_df.columns and 'humidity' in productions_df.columns:
+        # Preparar dados para o gráfico de radar
+        climate_data = productions_df[['temperature', 'humidity', 'rain', 'first_quality']].copy()
+        climate_data = climate_data.dropna()
+        
+        if not climate_data.empty:
+            # Agrupar por faixas de temperatura e umidade
+            climate_data['temp_range'] = pd.cut(climate_data['temperature'], bins=5)
+            climate_data['humidity_range'] = pd.cut(climate_data['humidity'], bins=5)
+            
+            # Calcular produção média por faixa
+            temp_production = climate_data.groupby('temp_range')['first_quality'].mean().reset_index()
+            humidity_production = climate_data.groupby('humidity_range')['first_quality'].mean().reset_index()
+            
+            # Criar gráfico de radar
+            fig = go.Figure()
+            
+            fig.add_trace(go.Scatterpolar(
+                r=temp_production['first_quality'].values,
+                theta=temp_production['temp_range'].astype(str).values,
+                fill='toself',
+                name='Temperatura',
+                line_color='#2ecc71'
+            ))
+            
+            fig.add_trace(go.Scatterpolar(
+                r=humidity_production['first_quality'].values,
+                theta=humidity_production['humidity_range'].astype(str).values,
+                fill='toself',
+                name='Umidade',
+                line_color='#3498db'
+            ))
+            
+            fig.update_layout(
+                polar=dict(
+                    radialaxis=dict(
+                        visible=True,
+                        range=[0, max(temp_production['first_quality'].max(), humidity_production['first_quality'].max()) * 1.1]
+                    )),
+                showlegend=True,
+                plot_bgcolor='rgba(0,0,0,0)', 
+                paper_bgcolor='rgba(0,0,0,0)',
+                font=dict(color='white')
+            )
+            
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("Dados insuficientes para análise climática.")
+    else:
+        st.info("Nenhum dado climático disponível para análise.")
+    st.markdown('</div>', unsafe_allow_html=True)
 
 # ================================
-# PÁGINAS EXISTENTES (MANTIDAS)
+# PÁGINA DE CADASTRO DE PRODUÇÃO
 # ================================
 def show_production_page():
-    # [Código mantido igual ao original]
     st.title("📝 Cadastro de Produção")
     
+    # Buscar dados climáticos automaticamente
     weather_data = get_weather_data(DEFAULT_CITY)
     
     if weather_data:
@@ -839,6 +715,7 @@ def show_production_page():
             first_quality = st.number_input("Caixas 1ª Qualidade", min_value=0.0, step=0.5)
             second_quality = st.number_input("Caixas 2ª Qualidade", min_value=0.0, step=0.5)
         
+        # Usar dados da API automaticamente
         if weather_data:
             temperature = weather_data['temperature']
             humidity = weather_data['humidity']
@@ -872,11 +749,13 @@ def show_production_page():
                 else:
                     st.error("Erro ao salvar produção. Verifique a conexão com o banco de dados.")
     
+    # Mostrar dados recentes com opção de exclusão
     productions_df = load_productions()
         
     if not productions_df.empty:
         st.subheader("Produções Recentes")
         
+        # Adicionar opção de exclusão
         for idx, row in productions_df.tail(10).iterrows():
             col1, col2, col3, col4 = st.columns([3, 2, 2, 1])
             with col1:
@@ -892,9 +771,79 @@ def show_production_page():
                         st.rerun()
                     else:
                         st.error("Erro ao excluir registro.")
+        
+        # Adicionar botão para baixar dados em Excel
+        st.markdown("---")
+        st.subheader("Exportar Dados")
+        
+        # Filtrar dados para exportação
+        min_date = pd.to_datetime(productions_df['date']).min().date()
+        max_date = pd.to_datetime(productions_df['date']).max().date()
+        
+        export_date_range = st.date_input(
+            "Período para Exportação",
+            value=(min_date, max_date),
+            min_value=min_date,
+            max_value=max_date,
+            key="export_date_range"
+        )
+        
+        try:
+            export_start_date, export_end_date = export_date_range
+        except:
+            export_start_date, export_end_date = min_date, max_date
+        
+        # Filtrar dados para exportação
+        export_df = productions_df[
+            (pd.to_datetime(productions_df['date']).dt.date >= export_start_date) &
+            (pd.to_datetime(productions_df['date']).dt.date <= export_end_date)
+        ]
+        
+        if not export_df.empty:
+            # Criar Excel em memória
+            output = io.BytesIO()
+            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                export_df.to_excel(writer, sheet_name='Produções', index=False)
+                
+                # Adicionar formatação
+                workbook = writer.book
+                worksheet = writer.sheets['Produções']
+                
+                # Formatar cabeçalhos
+                header_format = workbook.add_format({
+                    'bold': True,
+                    'text_wrap': True,
+                    'valign': 'top',
+                    'fg_color': '#2d5016',
+                    'font_color': 'white',
+                    'border': 1
+                })
+                
+                # Aplicar formatação aos cabeçalhos
+                for col_num, value in enumerate(export_df.columns.values):
+                    worksheet.write(0, col_num, value, header_format)
+                
+                # Ajustar largura das colunas
+                for idx, col in enumerate(export_df.columns):
+                    max_len = max(export_df[col].astype(str).map(len).max(), len(col)) + 2
+                    worksheet.set_column(idx, idx, max_len)
+            
+            output.seek(0)
+            
+            # Botão de download
+            st.download_button(
+                label="📥 Baixar Dados em Excel",
+                data=output,
+                file_name=f"producoes_{export_start_date}_{export_end_date}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+        else:
+            st.warning("Nenhum dado disponível para o período selecionado.")
 
+# ================================
+# PÁGINA DE CADASTRO DE INSUMOS
+# ================================
 def show_inputs_page():
-    # [Código mantido igual ao original]
     st.title("💰 Cadastro de Insumos")
     
     with st.form("inputs_form", clear_on_submit=True):
@@ -933,14 +882,85 @@ def show_inputs_page():
                 else:
                     st.error("Erro ao salvar insumo. Verifique a conexão com o banco de dados.")
     
+    # Mostrar dados recentes
     inputs_df = load_inputs()
         
     if not inputs_df.empty:
         st.subheader("Insumos Recentes")
         st.dataframe(inputs_df.tail(10), use_container_width=True)
+        
+        # Adicionar botão para baixar dados em Excel
+        st.markdown("---")
+        st.subheader("Exportar Dados")
+        
+        # Filtrar dados para exportação
+        min_date = pd.to_datetime(inputs_df['date']).min().date()
+        max_date = pd.to_datetime(inputs_df['date']).max().date()
+        
+        export_date_range = st.date_input(
+            "Período para Exportação",
+            value=(min_date, max_date),
+            min_value=min_date,
+            max_value=max_date,
+            key="export_inputs_date_range"
+        )
+        
+        try:
+            export_start_date, export_end_date = export_date_range
+        except:
+            export_start_date, export_end_date = min_date, max_date
+        
+        # Filtrar dados para exportação
+        export_df = inputs_df[
+            (pd.to_datetime(inputs_df['date']).dt.date >= export_start_date) &
+            (pd.to_datetime(inputs_df['date']).dt.date <= export_end_date)
+        ]
+        
+        if not export_df.empty:
+            # Criar Excel em memória
+            output = io.BytesIO()
+            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                export_df.to_excel(writer, sheet_name='Insumos', index=False)
+                
+                # Adicionar formatação
+                workbook = writer.book
+                worksheet = writer.sheets['Insumos']
+                
+                # Formatar cabeçalhos
+                header_format = workbook.add_format({
+                    'bold': True,
+                    'text_wrap': True,
+                    'valign': 'top',
+                    'fg_color': '#2d5016',
+                    'font_color': 'white',
+                    'border': 1
+                })
+                
+                # Aplicar formatação aos cabeçalhos
+                for col_num, value in enumerate(export_df.columns.values):
+                    worksheet.write(0, col_num, value, header_format)
+                
+                # Ajustar largura das colunas
+                for idx, col in enumerate(export_df.columns):
+                    max_len = max(export_df[col].astype(str).map(len).max(), len(col)) + 2
+                    worksheet.set_column(idx, idx, max_len)
+            
+            output.seek(0)
+            
+            # Botão de download
+            st.download_button(
+                label="📥 Baixar Dados em Excel",
+                data=output,
+                file_name=f"insumos_{export_start_date}_{export_end_date}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+        else:
+            st.warning("Nenhum dado disponível para o período selecionado.")
 
+# ================================
+# PÁGINA DE CONFIGURAÇÕES
+# ================================
 def show_settings_page():
-    # [Código mantido igual ao original]
     st.title("⚙️ Configurações de Preços")
     
     price_config = load_price_config()
@@ -976,8 +996,10 @@ def show_settings_page():
                 else:
                     st.error("Erro ao salvar preços. Verifique a conexão com o banco de dados.")
 
+# ================================
+# PÁGINA DE RELATÓRIOS (REFATORADA)
+# ================================
 def show_reports_page():
-    # [Código mantido igual ao original]
     st.title("📋 Relatórios")
     
     productions_df = load_productions()
@@ -987,6 +1009,7 @@ def show_reports_page():
         st.warning("Nenhum dado disponível para gerar relatórios.")
         return
     
+    # Filtros para relatórios - REFATORADO COM MAIS FILTROS
     st.sidebar.header("Filtros do Relatório")
     
     min_date = pd.to_datetime(productions_df['date']).min().date()
@@ -999,20 +1022,26 @@ def show_reports_page():
         max_value=max_date
     )
     
+    # NOVOS FILTROS ADICIONADOS
+    # Filtro por local
     all_locations = productions_df['local'].unique().tolist()
     selected_locations = st.sidebar.multiselect(
         "Filtrar por Local",
         options=all_locations,
-        default=all_locations
+        default=all_locations,
+        help="Selecione os locais para filtrar"
     )
     
+    # Filtro por cultura
     all_products = productions_df['product'].unique().tolist()
     selected_products = st.sidebar.multiselect(
         "Filtrar por Cultura",
         options=all_products,
-        default=all_products
+        default=all_products,
+        help="Selecione as culturas para filtrar"
     )
     
+    # Tipo de relatório
     report_type = st.sidebar.selectbox(
         "Tipo de Relatório",
         ["Produção Detalhada", "Resumo Financeiro", "Análise de Qualidade", "Custos e Insumos", "Análise por Local"]
@@ -1023,6 +1052,7 @@ def show_reports_page():
     except:
         start_date, end_date = min_date, max_date
     
+    # Filtrar dados - REFATORADO COM NOVOS FILTROS
     filtered_prod = productions_df[
         (pd.to_datetime(productions_df['date']).dt.date >= start_date) &
         (pd.to_datetime(productions_df['date']).dt.date <= end_date) &
@@ -1030,11 +1060,250 @@ def show_reports_page():
         (productions_df['product'].isin(selected_products))
     ]
     
+    filtered_inputs = inputs_df[
+        (pd.to_datetime(inputs_df['date']).dt.date >= start_date) &
+        (pd.to_datetime(inputs_df['date']).dt.date <= end_date)
+    ]
+    
     if filtered_prod.empty:
         st.warning("Nenhum dado encontrado para o período selecionado.")
         return
     
-    # [Restante do código de relatórios mantido igual]
+    # Exibir resumo dos filtros aplicados
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("Resumo dos Filtros")
+    st.sidebar.write(f"**Período:** {start_date} a {end_date}")
+    st.sidebar.write(f"**Locais selecionados:** {len(selected_locations)}")
+    st.sidebar.write(f"**Culturas selecionadas:** {len(selected_products)}")
+    st.sidebar.write(f"**Registros encontrados:** {len(filtered_prod)}")
+    
+    # Gerar relatório selecionado
+    if report_type == "Produção Detalhada":
+        st.header("📊 Relatório de Produção Detalhada")
+        st.write(f"**Período:** {start_date} a {end_date}")
+        st.write(f"**Locais:** {', '.join(selected_locations)}")
+        st.write(f"**Culturas:** {', '.join(selected_products)}")
+        
+        # Resumo estatístico
+        total_first = filtered_prod['first_quality'].sum()
+        total_second = filtered_prod['second_quality'].sum()
+        total_boxes = total_first + total_second
+        
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("Total de Caixas", f"{total_boxes:,.0f}")
+        with col2:
+            st.metric("1ª Qualidade", f"{total_first:,.0f}")
+        with col3:
+            st.metric("2ª Qualidade", f"{total_second:,.0f}")
+        with col4:
+            st.metric("Média 1ª Qualidade", f"{(total_first/total_boxes*100 if total_boxes > 0 else 0):.1f}%")
+        
+        # Dados detalhados
+        st.subheader("Dados Detalhados")
+        st.dataframe(filtered_prod, use_container_width=True)
+        
+        # Exportar dados
+        if st.button("📥 Exportar para Excel", key="export_detailed"):
+            export_to_excel(filtered_prod, "relatorio_producao_detalhada", start_date, end_date)
+    
+    elif report_type == "Resumo Financeiro":
+        st.header("💰 Relatório Financeiro")
+        st.write(f"**Período:** {start_date} a {end_date}")
+        st.write(f"**Locais:** {', '.join(selected_locations)}")
+        st.write(f"**Culturas:** {', '.join(selected_products)}")
+        
+        financials = calculate_financials(filtered_prod, filtered_inputs)
+        
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("Receita Total", f"R$ {financials['total_revenue']:,.2f}")
+        with col2:
+            st.metric("Custos Totais", f"R$ {financials['total_costs']:,.2f}")
+        with col3:
+            st.metric("Lucro Líquido", f"R$ {financials['profit']:,.2f}")
+        with col4:
+            st.metric("Margem de Lucro", f"{financials['profit_margin']:.1f}%")
+        
+        # Detalhamento por produto
+        st.subheader("Receita por Produto")
+        price_config = load_price_config()
+        revenue_by_product = []
+        
+        for product in filtered_prod['product'].unique():
+            product_data = filtered_prod[filtered_prod['product'] == product]
+            product_price = price_config[price_config['product'] == product]
+            
+            if not product_price.empty:
+                first_price = product_price['first_quality_price'].values[0]
+                second_price = product_price['second_quality_price'].values[0]
+            else:
+                first_price, second_price = 10.0, 5.0
+            
+            first_revenue = product_data['first_quality'].sum() * first_price
+            second_revenue = product_data['second_quality'].sum() * second_price
+            total_revenue = first_revenue + second_revenue
+            
+            revenue_by_product.append({
+                'Produto': product,
+                '1ª Qualidade (R$)': first_revenue,
+                '2ª Qualidade (R$)': second_revenue,
+                'Receita Total (R$)': first_revenue + second_revenue
+            })
+        
+        revenue_df = pd.DataFrame(revenue_by_product)
+        st.dataframe(revenue_df, use_container_width=True)
+        
+        # Gráfico de receita por produto
+        fig = px.bar(revenue_df, x='Produto', y='Receita Total (R$)', 
+                     title="Receita por Cultura",
+                     color_discrete_sequence=['#2d5016'])
+        fig.update_layout(plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
+                         font=dict(color='white'))
+        st.plotly_chart(fig, use_container_width=True)
+        
+        # Exportar dados
+        if st.button("📥 Exportar para Excel", key="export_financial"):
+            export_to_excel(revenue_df, "relatorio_financeiro", start_date, end_date)
+    
+    elif report_type == "Análise de Qualidade":
+        st.header("🔍 Análise de Qualidade")
+        st.write(f"**Período:** {start_date} a {end_date}")
+        st.write(f"**Locais:** {', '.join(selected_locations)}")
+        st.write(f"**Culturas:** {', '.join(selected_products)}")
+        
+        quality_data = []
+        for product in filtered_prod['product'].unique():
+            product_data = filtered_prod[filtered_prod['product'] == product]
+            total = product_data['first_quality'].sum() + product_data['second_quality'].sum()
+            
+            if total > 0:
+                first_percent = (product_data['first_quality'].sum() / total * 100)
+                second_percent = (product_data['second_quality'].sum() / total * 100)
+                
+                quality_data.append({
+                    'Produto': product,
+                    'Total Caixas': total,
+                    '1ª Qualidade (%)': first_percent,
+                    '2ª Qualidade (%)': second_percent,
+                    '1ª Qualidade (cx)': product_data['first_quality'].sum(),
+                    '2ª Qualidade (cx)': product_data['second_quality'].sum()
+                })
+        
+        quality_df = pd.DataFrame(quality_data)
+        st.dataframe(quality_df, use_container_width=True)
+        
+        # Gráfico de qualidade
+        fig = px.bar(quality_df, x='Produto', y=['1ª Qualidade (cx)', '2ª Qualidade (cx)'], 
+                     barmode='stack', title="Distribuição de Qualidade por Produto",
+                     color_discrete_sequence=['#2ecc71', '#f1c40f'])
+        fig.update_layout(plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
+                         font=dict(color='white'))
+        st.plotly_chart(fig, use_container_width=True)
+        
+        # Exportar dados
+        if st.button("📥 Exportar para Excel", key="export_quality"):
+            export_to_excel(quality_df, "relatorio_qualidade", start_date, end_date)
+    
+    elif report_type == "Custos e Insumos":
+        st.header("💸 Análise de Custos e Insumos")
+        st.write(f"**Período:** {start_date} a {end_date}")
+        
+        if not filtered_inputs.empty:
+            # Custos por tipo
+            costs_by_type = filtered_inputs.groupby('type')['cost'].sum().reset_index()
+            fig = px.pie(costs_by_type, values='cost', names='type', 
+                         title="Distribuição de Custos por Tipo",
+                         color_discrete_sequence=px.colors.qualitative.Set3)
+            fig.update_layout(plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
+                             font=dict(color='white'))
+            st.plotly_chart(fig, use_container_width=True)
+            
+            # Tabela de custos detalhada
+            st.subheader("Detalhamento de Custos")
+            st.dataframe(filtered_inputs, use_container_width=True)
+            
+            # Exportar dados
+            if st.button("📥 Exportar para Excel", key="export_costs"):
+                export_to_excel(filtered_inputs, "relatorio_custos", start_date, end_date)
+        else:
+            st.info("Nenhum dado de insumos/custos para o período selecionado.")
+    
+    elif report_type == "Análise por Local":
+        st.header("🏭 Análise de Produção por Local")
+        st.write(f"**Período:** {start_date} a {end_date}")
+        st.write(f"**Culturas:** {', '.join(selected_products)}")
+        
+        # Análise por local
+        production_by_location = filtered_prod.groupby('local').agg({
+            'first_quality': 'sum',
+            'second_quality': 'sum',
+            'product': 'count'
+        }).reset_index()
+        
+        production_by_location['total'] = production_by_location['first_quality'] + production_by_location['second_quality']
+        production_by_location['percentual_1a'] = (production_by_location['first_quality'] / production_by_location['total'] * 100).round(1)
+        
+        st.subheader("Produção por Local")
+        st.dataframe(production_by_location, use_container_width=True)
+        
+        # Gráfico de produção por local
+        fig = px.bar(production_by_location, x='local', y='total', 
+                     title="Produção Total por Local",
+                     color='total', color_continuous_scale='viridis')
+        fig.update_layout(plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
+                         font=dict(color='white'))
+        st.plotly_chart(fig, use_container_width=True)
+        
+        # Gráfico de qualidade por local
+        fig = px.bar(production_by_location, x='local', y=['first_quality', 'second_quality'], 
+                     barmode='stack', title="Qualidade por Local",
+                     color_discrete_sequence=['#2ecc71', '#f1c40f'])
+        fig.update_layout(plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
+                         font=dict(color='white'))
+        st.plotly_chart(fig, use_container_width=True)
+        
+        # Exportar dados
+        if st.button("📥 Exportar para Excel", key="export_location"):
+            export_to_excel(production_by_location, "relatorio_por_local", start_date, end_date)
+
+# Função auxiliar para exportar dados para Excel
+def export_to_excel(dataframe, report_name, start_date, end_date):
+    """Exporta dataframe para Excel"""
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        dataframe.to_excel(writer, sheet_name='Relatório', index=False)
+        
+        workbook = writer.book
+        worksheet = writer.sheets['Relatório']
+        
+        # Formatar cabeçalhos
+        header_format = workbook.add_format({
+            'bold': True,
+            'text_wrap': True,
+            'valign': 'top',
+            'fg_color': '#2d5016',
+            'font_color': 'white',
+            'border': 1
+        })
+        
+        # Aplicar formatação aos cabeçalhos
+        for col_num, value in enumerate(dataframe.columns.values):
+            worksheet.write(0, col_num, value, header_format)
+        
+        # Ajustar largura das colunas
+        for idx, col in enumerate(dataframe.columns):
+            max_len = max(dataframe[col].astype(str).map(len).max(), len(col)) + 2
+            worksheet.set_column(idx, idx, max_len)
+    
+    output.seek(0)
+    
+    st.download_button(
+        label="⬇️ Baixar Arquivo Excel",
+        data=output,
+        file_name=f"{report_name}_{start_date}_{end_date}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
 
 # ================================
 # FUNÇÃO PRINCIPAL
@@ -1043,19 +1312,19 @@ def main():
     # Inicializar banco de dados
     init_db()
     
-    # Menu lateral atualizado com Oráculo
+    # Menu lateral
     with st.sidebar:
         st.image("https://via.placeholder.com/150x50/2d5016/ffffff?text=AgroGestão", use_container_width=True)
         st.markdown("**Sistema de Gestão Agrícola**")
         st.markdown("---")
         
-        # Menu de navegação atualizado
-        menu_options = ["📊 Dashboard", "📝 Produção", "💰 Insumos", "📋 Relatórios", "⚙️ Configurações", "🔮 Oráculo"]
+        # Menu de navegação
+        menu_options = ["📊 Dashboard", "📝 Produção", "💰 Insumos", "📋 Relatórios", "⚙️ Configurações"]
         
         selected = option_menu(
             menu_title="Navegação",
             options=menu_options,
-            icons=["speedometer2", "pencil", "cash-coin", "file-text", "gear", "robot"],
+            icons=["speedometer2", "pencil", "cash-coin", "file-text", "gear"],
             menu_icon="cast",
             default_index=0,
             styles={
@@ -1066,7 +1335,7 @@ def main():
             }
         )
     
-    # Navegação entre páginas atualizada
+    # Navegação entre páginas
     if selected == "📊 Dashboard":
         show_dashboard()
     elif selected == "📝 Produção":
@@ -1077,8 +1346,6 @@ def main():
         show_reports_page()
     elif selected == "⚙️ Configurações":
         show_settings_page()
-    elif selected == "🔮 Oráculo":
-        show_oracle_page()
 
 # ================================
 # EXECUÇÃO DO APLICATIVO
