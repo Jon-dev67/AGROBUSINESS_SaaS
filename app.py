@@ -116,7 +116,7 @@ def init_db():
     try:
         c = conn.cursor()
         
-        # Tabela de produções
+        # Tabela de produções (MODIFICADA - adicionados campos de preço)
         c.execute('''CREATE TABLE IF NOT EXISTS productions
                      (id SERIAL PRIMARY KEY,
                       date TEXT NOT NULL,
@@ -124,6 +124,8 @@ def init_db():
                       product TEXT NOT NULL,
                       first_quality REAL NOT NULL,
                       second_quality REAL NOT NULL,
+                      first_quality_price REAL NOT NULL,
+                      second_quality_price REAL NOT NULL,
                       temperature REAL,
                       humidity REAL,
                       rain REAL,
@@ -142,29 +144,6 @@ def init_db():
                       location TEXT,
                       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
         
-        # Tabela de configurações de preços
-        c.execute('''CREATE TABLE IF NOT EXISTS price_config
-                     (id SERIAL PRIMARY KEY,
-                      product TEXT NOT NULL,
-                      first_quality_price REAL NOT NULL,
-                      second_quality_price REAL NOT NULL,
-                      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                      UNIQUE(product))''')
-        
-        # Verificar se a tabela price_config está vazia
-        c.execute("SELECT COUNT(*) FROM price_config")
-        if c.fetchone()[0] == 0:
-            default_prices = [
-                ("Tomate", 15.0, 8.0),
-                ("Alface", 12.0, 6.0),
-                ("Pepino", 10.0, 5.0),
-                ("Pimentão", 18.0, 9.0),
-                ("Morango", 25.0, 12.0)
-            ]
-            for product, first_price, second_price in default_prices:
-                c.execute("INSERT INTO price_config (product, first_quality_price, second_quality_price) VALUES (%s, %s, %s) ON CONFLICT (product) DO NOTHING", 
-                         (product, first_price, second_price))
-        
         conn.commit()
         st.success("Banco de dados inicializado com sucesso!")
     except Exception as e:
@@ -172,15 +151,15 @@ def init_db():
     finally:
         conn.close()
 
-def save_production(date, local, product, first_quality, second_quality, temperature, humidity, rain, weather_data):
+def save_production(date, local, product, first_quality, second_quality, first_quality_price, second_quality_price, temperature, humidity, rain, weather_data):
     conn = get_db_connection()
     if conn is None:
         return False
     
     try:
         c = conn.cursor()
-        c.execute("INSERT INTO productions (date, local, product, first_quality, second_quality, temperature, humidity, rain, weather_data) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
-                  (date, local, product, first_quality, second_quality, temperature, humidity, rain, weather_data))
+        c.execute("INSERT INTO productions (date, local, product, first_quality, second_quality, first_quality_price, second_quality_price, temperature, humidity, rain, weather_data) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                  (date, local, product, first_quality, second_quality, first_quality_price, second_quality_price, temperature, humidity, rain, weather_data))
         conn.commit()
         return True
     except Exception as e:
@@ -250,37 +229,6 @@ def load_inputs():
     finally:
         conn.close()
 
-def load_price_config():
-    conn = get_db_connection()
-    if conn is None:
-        return pd.DataFrame()
-    
-    try:
-        df = pd.read_sql_query("SELECT * FROM price_config", conn)
-        return df
-    except Exception as e:
-        st.error(f"Erro ao carregar configurações de preço: {str(e)}")
-        return pd.DataFrame()
-    finally:
-        conn.close()
-
-def save_price_config(product, first_price, second_price):
-    conn = get_db_connection()
-    if conn is None:
-        return False
-    
-    try:
-        c = conn.cursor()
-        c.execute("INSERT INTO price_config (product, first_quality_price, second_quality_price) VALUES (%s, %s, %s) ON CONFLICT (product) DO UPDATE SET first_quality_price = %s, second_quality_price = %s",
-                  (product, first_price, second_price, first_price, second_price))
-        conn.commit()
-        return True
-    except Exception as e:
-        st.error(f"Erro ao salvar configuração de preço: {str(e)}")
-        return False
-    finally:
-        conn.close()
-
 # ================================
 # FUNÇÕES DE API CLIMÁTICA
 # ================================
@@ -312,8 +260,6 @@ def get_weather_data(city):
 # FUNÇÕES DE CÁLCULO FINANCEIRO
 # ================================
 def calculate_financials(productions_df, inputs_df):
-    price_config = load_price_config()
-    
     if productions_df.empty:
         return {
             "total_revenue": 0,
@@ -324,25 +270,14 @@ def calculate_financials(productions_df, inputs_df):
             "profit_margin": 0
         }
     
-    # Calcular receita
+    # Calcular receita usando os preços específicos de cada registro
     revenue_data = []
     for _, row in productions_df.iterrows():
-        product = row['product']
-        price_row = price_config[price_config['product'] == product]
-        
-        if not price_row.empty:
-            first_price = price_row['first_quality_price'].values[0]
-            second_price = price_row['second_quality_price'].values[0]
-        else:
-            # Preços padrão se não encontrado
-            first_price = 10.0
-            second_price = 5.0
-        
-        first_revenue = row['first_quality'] * first_price
-        second_revenue = row['second_quality'] * second_price
+        first_revenue = row['first_quality'] * row['first_quality_price']
+        second_revenue = row['second_quality'] * row['second_quality_price']
         
         revenue_data.append({
-            'product': product,
+            'product': row['product'],
             'first_revenue': first_revenue,
             'second_revenue': second_revenue,
             'total_revenue': first_revenue + second_revenue
@@ -513,7 +448,6 @@ def show_dashboard():
         st.subheader("Receita por Cultura")
         
         if not productions_df.empty:
-            price_config = load_price_config()
             revenue_by_product = []
             
             for product in filtered_df['product'].unique() if not filtered_df.empty else productions_df['product'].unique():
@@ -521,17 +455,9 @@ def show_dashboard():
                     product_data = filtered_df[filtered_df['product'] == product]
                 else:
                     product_data = productions_df[productions_df['product'] == product]
-                    
-                product_price = price_config[price_config['product'] == product]
                 
-                if not product_price.empty:
-                    first_price = product_price['first_quality_price'].values[0]
-                    second_price = product_price['second_quality_price'].values[0]
-                else:
-                    first_price, second_price = 10.0, 5.0
-                
-                first_revenue = product_data['first_quality'].sum() * first_price
-                second_revenue = product_data['second_quality'].sum() * second_price
+                first_revenue = (product_data['first_quality'] * product_data['first_quality_price']).sum()
+                second_revenue = (product_data['second_quality'] * product_data['second_quality_price']).sum()
                 total_revenue = first_revenue + second_revenue
                 
                 revenue_by_product.append({
@@ -684,7 +610,7 @@ def show_dashboard():
     st.markdown('</div>', unsafe_allow_html=True)
 
 # ================================
-# PÁGINA DE CADASTRO DE PRODUÇÃO
+# PÁGINA DE CADASTRO DE PRODUÇÃO (MODIFICADA)
 # ================================
 def show_production_page():
     st.title("📝 Cadastro de Produção")
@@ -715,6 +641,19 @@ def show_production_page():
             first_quality = st.number_input("Caixas 1ª Qualidade", min_value=0.0, step=0.5)
             second_quality = st.number_input("Caixas 2ª Qualidade", min_value=0.0, step=0.5)
         
+        # NOVO: Campos para preços por qualidade
+        st.subheader("Preços das Caixas")
+        col3, col4 = st.columns(2)
+        
+        with col3:
+            first_quality_price = st.number_input("Preço 1ª Qualidade (R$/caixa)", min_value=0.0, step=0.1, value=15.0)
+        with col4:
+            second_quality_price = st.number_input("Preço 2ª Qualidade (R$/caixa)", min_value=0.0, step=0.1, value=8.0)
+        
+        # Cálculo automático do valor total
+        total_value = (first_quality * first_quality_price) + (second_quality * second_quality_price)
+        st.info(f"**Valor total estimado: R$ {total_value:,.2f}**")
+        
         # Usar dados da API automaticamente
         if weather_data:
             temperature = weather_data['temperature']
@@ -739,6 +678,8 @@ def show_production_page():
                     product, 
                     first_quality, 
                     second_quality, 
+                    first_quality_price,  # NOVO: preço 1ª qualidade
+                    second_quality_price, # NOVO: preço 2ª qualidade
                     temperature, 
                     humidity, 
                     rain,
@@ -757,14 +698,17 @@ def show_production_page():
         
         # Adicionar opção de exclusão
         for idx, row in productions_df.tail(10).iterrows():
-            col1, col2, col3, col4 = st.columns([3, 2, 2, 1])
+            col1, col2, col3, col4, col5 = st.columns([3, 2, 2, 2, 1])
             with col1:
                 st.write(f"{row['date']} - {row['product']} em {row['local']}")
             with col2:
                 st.write(f"1ª: {row['first_quality']}cx, 2ª: {row['second_quality']}cx")
             with col3:
-                st.write(f"T: {row['temperature']}°C, U: {row['humidity']}%")
+                st.write(f"R$ {row['first_quality_price']}/cx | R$ {row['second_quality_price']}/cx")
             with col4:
+                total_row = (row['first_quality'] * row['first_quality_price']) + (row['second_quality'] * row['second_quality_price'])
+                st.write(f"Total: R$ {total_row:,.2f}")
+            with col5:
                 if st.button("🗑️", key=f"delete_{row['id']}"):
                     if delete_production(row['id']):
                         st.success("Registro excluído com sucesso!")
@@ -958,45 +902,6 @@ def show_inputs_page():
             st.warning("Nenhum dado disponível para o período selecionado.")
 
 # ================================
-# PÁGINA DE CONFIGURAÇÕES
-# ================================
-def show_settings_page():
-    st.title("⚙️ Configurações de Preços")
-    
-    price_config = load_price_config()
-    
-    st.subheader("Preços Atuais por Cultura")
-    if not price_config.empty:
-        st.dataframe(price_config[['product', 'first_quality_price', 'second_quality_price']], 
-                    use_container_width=True)
-    else:
-        st.info("Nenhum preço configurado. Adicione preços para suas culturas.")
-    
-    st.subheader("Adicionar/Editar Preços")
-    with st.form("price_form"):
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            product = st.text_input("Cultura")
-        with col2:
-            first_price = st.number_input("Preço 1ª Qualidade (R$)", min_value=0.0, step=0.5)
-        with col3:
-            second_price = st.number_input("Preço 2ª Qualidade (R$)", min_value=0.0, step=0.5)
-        
-        submitted = st.form_submit_button("Salvar Preços")
-        
-        if submitted:
-            if not all([product, first_price > 0, second_price > 0]):
-                st.error("Preencha todos os campos corretamente.")
-            else:
-                success = save_price_config(product, first_price, second_price)
-                if success:
-                    st.success("Preços salvos com sucesso!")
-                    st.rerun()
-                else:
-                    st.error("Erro ao salvar preços. Verifique a conexão com o banco de dados.")
-
-# ================================
 # PÁGINA DE RELATÓRIOS (REFATORADA)
 # ================================
 def show_reports_page():
@@ -1009,7 +914,7 @@ def show_reports_page():
         st.warning("Nenhum dado disponível para gerar relatórios.")
         return
     
-    # Filtros para relatórios - REFATORADO COM MAIS FILTROS
+    # Filtros para relatórios
     st.sidebar.header("Filtros do Relatório")
     
     min_date = pd.to_datetime(productions_df['date']).min().date()
@@ -1022,7 +927,6 @@ def show_reports_page():
         max_value=max_date
     )
     
-    # NOVOS FILTROS ADICIONADOS
     # Filtro por local
     all_locations = productions_df['local'].unique().tolist()
     selected_locations = st.sidebar.multiselect(
@@ -1052,7 +956,7 @@ def show_reports_page():
     except:
         start_date, end_date = min_date, max_date
     
-    # Filtrar dados - REFATORADO COM NOVOS FILTROS
+    # Filtrar dados
     filtered_prod = productions_df[
         (pd.to_datetime(productions_df['date']).dt.date >= start_date) &
         (pd.to_datetime(productions_df['date']).dt.date <= end_date) &
@@ -1127,21 +1031,13 @@ def show_reports_page():
         
         # Detalhamento por produto
         st.subheader("Receita por Produto")
-        price_config = load_price_config()
         revenue_by_product = []
         
         for product in filtered_prod['product'].unique():
             product_data = filtered_prod[filtered_prod['product'] == product]
-            product_price = price_config[price_config['product'] == product]
             
-            if not product_price.empty:
-                first_price = product_price['first_quality_price'].values[0]
-                second_price = product_price['second_quality_price'].values[0]
-            else:
-                first_price, second_price = 10.0, 5.0
-            
-            first_revenue = product_data['first_quality'].sum() * first_price
-            second_revenue = product_data['second_quality'].sum() * second_price
+            first_revenue = (product_data['first_quality'] * product_data['first_quality_price']).sum()
+            second_revenue = (product_data['second_quality'] * product_data['second_quality_price']).sum()
             total_revenue = first_revenue + second_revenue
             
             revenue_by_product.append({
@@ -1312,19 +1208,19 @@ def main():
     # Inicializar banco de dados
     init_db()
     
-    # Menu lateral
+    # Menu lateral (REMOVIDA A OPÇÃO CONFIGURAÇÕES)
     with st.sidebar:
         st.image("https://via.placeholder.com/150x50/2d5016/ffffff?text=AgroGestão", use_container_width=True)
         st.markdown("**Sistema de Gestão Agrícola**")
         st.markdown("---")
         
-        # Menu de navegação
-        menu_options = ["📊 Dashboard", "📝 Produção", "💰 Insumos", "📋 Relatórios", "⚙️ Configurações"]
+        # Menu de navegação (SEM CONFIGURAÇÕES)
+        menu_options = ["📊 Dashboard", "📝 Produção", "💰 Insumos", "📋 Relatórios"]
         
         selected = option_menu(
             menu_title="Navegação",
             options=menu_options,
-            icons=["speedometer2", "pencil", "cash-coin", "file-text", "gear"],
+            icons=["speedometer2", "pencil", "cash-coin", "file-text"],
             menu_icon="cast",
             default_index=0,
             styles={
@@ -1335,7 +1231,7 @@ def main():
             }
         )
     
-    # Navegação entre páginas
+    # Navegação entre páginas (SEM CONFIGURAÇÕES)
     if selected == "📊 Dashboard":
         show_dashboard()
     elif selected == "📝 Produção":
@@ -1344,8 +1240,6 @@ def main():
         show_inputs_page()
     elif selected == "📋 Relatórios":
         show_reports_page()
-    elif selected == "⚙️ Configurações":
-        show_settings_page()
 
 # ================================
 # EXECUÇÃO DO APLICATIVO
