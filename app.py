@@ -144,6 +144,23 @@ def init_db():
                       location TEXT,
                       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
         
+        # VERIFICAÇÃO E ADIÇÃO DAS NOVAS COLUNAS SE NÃO EXISTIREM
+        try:
+            # Verificar se a coluna first_quality_price existe
+            c.execute("SELECT first_quality_price FROM productions LIMIT 1")
+        except Exception:
+            # Se der erro, a coluna não existe, então vamos adicioná-la
+            st.info("Adicionando coluna first_quality_price à tabela productions...")
+            c.execute("ALTER TABLE productions ADD COLUMN first_quality_price REAL DEFAULT 15.0")
+        
+        try:
+            # Verificar se a coluna second_quality_price existe
+            c.execute("SELECT second_quality_price FROM productions LIMIT 1")
+        except Exception:
+            # Se der erro, a coluna não existe, então vamos adicioná-la
+            st.info("Adicionando coluna second_quality_price à tabela productions...")
+            c.execute("ALTER TABLE productions ADD COLUMN second_quality_price REAL DEFAULT 8.0")
+        
         conn.commit()
         st.success("Banco de dados inicializado com sucesso!")
     except Exception as e:
