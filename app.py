@@ -6,15 +6,13 @@ from plotly.subplots import make_subplots
 import numpy as np
 from datetime import datetime, timedelta
 import json
-import sqlite3
 import hashlib
 import requests
 import time
 from streamlit_option_menu import option_menu
 import io
-import psycopg2
-from psycopg2.extras import RealDictCursor
 import os
+from supabase import create_client, Client
 
 # ================================
 # CONFIGURAÇÕES INICIAIS
@@ -80,206 +78,155 @@ apply_dark_theme()
 API_KEY = "eef20bca4e6fb1ff14a81a3171de5cec"
 DEFAULT_CITY = "Londrina"
 
-# Configurações do PostgreSQL
-DB_CONFIG = {
-    "host": "dpg-d361csili9vc738rea90-a.oregon-postgres.render.com",
-    "database": "postgresql_agro",
-    "user": "postgresql_agro_user",
-    "password": "gl5pErtk8tC2vqFLfswn7B7ocoxK7gk5",
-    "port": "5432"
-}
+# Configurações do Supabase
+SUPABASE_URL = "https://uskacaeytkwbstqsbofn.supabase.co"
+SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVza2FjYWV5dGt3YnN0cXNib2ZuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjIyODk4MTEsImV4cCI6MjA3Nzg2NTgxMX0.v_CqAePnCDIX1NhLoNefLgN_56XUJozUOS8rfXPZyt8"
 
 # ================================
-# FUNÇÕES DE BANCO DE DADOS (POSTGRESQL)
+# FUNÇÕES DE BANCO DE DADOS (SUPABASE)
 # ================================
-def get_db_connection():
-    """Estabelece conexão com o PostgreSQL"""
+def get_supabase_client():
+    """Estabelece conexão com o Supabase"""
     try:
-        conn = psycopg2.connect(
-            host=DB_CONFIG["host"],
-            database=DB_CONFIG["database"],
-            user=DB_CONFIG["user"],
-            password=DB_CONFIG["password"],
-            port=DB_CONFIG["port"]
-        )
-        return conn
+        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+        return supabase
     except Exception as e:
-        st.error(f"Erro ao conectar com o banco de dados: {str(e)}")
+        st.error(f"Erro ao conectar com o Supabase: {str(e)}")
         return None
 
 def init_db():
-    """Inicializa as tabelas no PostgreSQL"""
-    conn = get_db_connection()
-    if conn is None:
-        return
-    
-    try:
-        c = conn.cursor()
-        
-        # Tabela de produções
-        c.execute('''CREATE TABLE IF NOT EXISTS productions
-                     (id SERIAL PRIMARY KEY,
-                      date TEXT NOT NULL,
-                      local TEXT NOT NULL,
-                      product TEXT NOT NULL,
-                      first_quality REAL NOT NULL,
-                      second_quality REAL NOT NULL,
-                      temperature REAL,
-                      humidity REAL,
-                      rain REAL,
-                      weather_data TEXT,
-                      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
-        
-        # Tabela de insumos
-        c.execute('''CREATE TABLE IF NOT EXISTS inputs
-                     (id SERIAL PRIMARY KEY,
-                      date TEXT NOT NULL,
-                      type TEXT NOT NULL,
-                      description TEXT NOT NULL,
-                      quantity REAL NOT NULL,
-                      unit TEXT NOT NULL,
-                      cost REAL NOT NULL,
-                      location TEXT,
-                      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
-        
-        # Tabela de configurações de preços
-        c.execute('''CREATE TABLE IF NOT EXISTS price_config
-                     (id SERIAL PRIMARY KEY,
-                      product TEXT NOT NULL,
-                      first_quality_price REAL NOT NULL,
-                      second_quality_price REAL NOT NULL,
-                      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                      UNIQUE(product))''')
-        
-        # Verificar se a tabela price_config está vazia
-        c.execute("SELECT COUNT(*) FROM price_config")
-        if c.fetchone()[0] == 0:
-            default_prices = [
-                ("Tomate", 15.0, 8.0),
-                ("Alface", 12.0, 6.0),
-                ("Pepino", 10.0, 5.0),
-                ("Pimentão", 18.0, 9.0),
-                ("Morango", 25.0, 12.0)
-            ]
-            for product, first_price, second_price in default_prices:
-                c.execute("INSERT INTO price_config (product, first_quality_price, second_quality_price) VALUES (%s, %s, %s) ON CONFLICT (product) DO NOTHING", 
-                         (product, first_price, second_price))
-        
-        conn.commit()
-        st.success("Banco de dados inicializado com sucesso!")
-    except Exception as e:
-        st.error(f"Erro ao inicializar banco de dados: {str(e)}")
-    finally:
-        conn.close()
-
-def save_production(date, local, product, first_quality, second_quality, temperature, humidity, rain, weather_data):
-    conn = get_db_connection()
-    if conn is None:
+    """Verifica a conexão com o Supabase"""
+    supabase = get_supabase_client()
+    if supabase is None:
         return False
     
     try:
-        c = conn.cursor()
-        c.execute("INSERT INTO productions (date, local, product, first_quality, second_quality, temperature, humidity, rain, weather_data) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
-                  (date, local, product, first_quality, second_quality, temperature, humidity, rain, weather_data))
-        conn.commit()
+        # Testa a conexão tentando buscar dados
+        result = supabase.table("productions").select("*").limit(1).execute()
+        st.success("✅ Conexão com Supabase estabelecida com sucesso!")
+        return True
+    except Exception as e:
+        st.error(f"❌ Erro ao conectar com o banco de dados: {str(e)}")
+        return False
+
+def save_production(date, local, product, first_quality, second_quality, temperature, humidity, rain, weather_data):
+    supabase = get_supabase_client()
+    if supabase is None:
+        return False
+    
+    try:
+        data = {
+            "date": date,
+            "local": local,
+            "product": product,
+            "first_quality": float(first_quality),
+            "second_quality": float(second_quality),
+            "temperature": float(temperature) if temperature else None,
+            "humidity": float(humidity) if humidity else None,
+            "rain": float(rain) if rain else None,
+            "weather_data": weather_data
+        }
+        result = supabase.table("productions").insert(data).execute()
         return True
     except Exception as e:
         st.error(f"Erro ao salvar produção: {str(e)}")
         return False
-    finally:
-        conn.close()
 
 def load_productions():
-    conn = get_db_connection()
-    if conn is None:
+    supabase = get_supabase_client()
+    if supabase is None:
         return pd.DataFrame()
     
     try:
-        df = pd.read_sql_query("SELECT * FROM productions ORDER BY date DESC", conn)
-        return df
+        result = supabase.table("productions").select("*").order("created_at", desc=True).execute()
+        if hasattr(result, 'data'):
+            df = pd.DataFrame(result.data)
+            return df
+        return pd.DataFrame()
     except Exception as e:
         st.error(f"Erro ao carregar produções: {str(e)}")
         return pd.DataFrame()
-    finally:
-        conn.close()
 
 def delete_production(production_id):
-    conn = get_db_connection()
-    if conn is None:
+    supabase = get_supabase_client()
+    if supabase is None:
         return False
     
     try:
-        c = conn.cursor()
-        c.execute("DELETE FROM productions WHERE id = %s", (production_id,))
-        conn.commit()
+        result = supabase.table("productions").delete().eq("id", production_id).execute()
         return True
     except Exception as e:
         st.error(f"Erro ao excluir produção: {str(e)}")
         return False
-    finally:
-        conn.close()
 
 def save_input(date, input_type, description, quantity, unit, cost, location):
-    conn = get_db_connection()
-    if conn is None:
+    supabase = get_supabase_client()
+    if supabase is None:
         return False
     
     try:
-        c = conn.cursor()
-        c.execute("INSERT INTO inputs (date, type, description, quantity, unit, cost, location) VALUES (%s, %s, %s, %s, %s, %s, %s)",
-                  (date, input_type, description, quantity, unit, cost, location))
-        conn.commit()
+        data = {
+            "date": date,
+            "type": input_type,
+            "description": description,
+            "quantity": float(quantity),
+            "unit": unit,
+            "cost": float(cost),
+            "location": location
+        }
+        result = supabase.table("inputs").insert(data).execute()
         return True
     except Exception as e:
         st.error(f"Erro ao salvar insumo: {str(e)}")
         return False
-    finally:
-        conn.close()
 
 def load_inputs():
-    conn = get_db_connection()
-    if conn is None:
+    supabase = get_supabase_client()
+    if supabase is None:
         return pd.DataFrame()
     
     try:
-        df = pd.read_sql_query("SELECT * FROM inputs ORDER BY date DESC", conn)
-        return df
+        result = supabase.table("inputs").select("*").order("created_at", desc=True).execute()
+        if hasattr(result, 'data'):
+            df = pd.DataFrame(result.data)
+            return df
+        return pd.DataFrame()
     except Exception as e:
         st.error(f"Erro ao carregar insumos: {str(e)}")
         return pd.DataFrame()
-    finally:
-        conn.close()
 
 def load_price_config():
-    conn = get_db_connection()
-    if conn is None:
+    supabase = get_supabase_client()
+    if supabase is None:
         return pd.DataFrame()
     
     try:
-        df = pd.read_sql_query("SELECT * FROM price_config", conn)
-        return df
+        result = supabase.table("price_config").select("*").execute()
+        if hasattr(result, 'data'):
+            df = pd.DataFrame(result.data)
+            return df
+        return pd.DataFrame()
     except Exception as e:
         st.error(f"Erro ao carregar configurações de preço: {str(e)}")
         return pd.DataFrame()
-    finally:
-        conn.close()
 
 def save_price_config(product, first_price, second_price):
-    conn = get_db_connection()
-    if conn is None:
+    supabase = get_supabase_client()
+    if supabase is None:
         return False
     
     try:
-        c = conn.cursor()
-        c.execute("INSERT INTO price_config (product, first_quality_price, second_quality_price) VALUES (%s, %s, %s) ON CONFLICT (product) DO UPDATE SET first_quality_price = %s, second_quality_price = %s",
-                  (product, first_price, second_price, first_price, second_price))
-        conn.commit()
+        data = {
+            "product": product,
+            "first_quality_price": float(first_price),
+            "second_quality_price": float(second_price)
+        }
+        # Usar upsert para inserir ou atualizar
+        result = supabase.table("price_config").upsert(data).execute()
         return True
     except Exception as e:
         st.error(f"Erro ao salvar configuração de preço: {str(e)}")
         return False
-    finally:
-        conn.close()
 
 # ================================
 # FUNÇÕES DE API CLIMÁTICA
@@ -383,8 +330,9 @@ def show_dashboard():
     st.sidebar.header("Filtros")
     
     if not productions_df.empty:
-        min_date = pd.to_datetime(productions_df['date']).min().date()
-        max_date = pd.to_datetime(productions_df['date']).max().date()
+        productions_df['date'] = pd.to_datetime(productions_df['date'])
+        min_date = productions_df['date'].min().date()
+        max_date = productions_df['date'].max().date()
         
         date_range = st.sidebar.date_input(
             "Período",
@@ -412,8 +360,8 @@ def show_dashboard():
             start_date, end_date = min_date, max_date
         
         filtered_df = productions_df[
-            (pd.to_datetime(productions_df['date']).dt.date >= start_date) &
-            (pd.to_datetime(productions_df['date']).dt.date <= end_date) &
+            (productions_df['date'].dt.date >= start_date) &
+            (productions_df['date'].dt.date <= end_date) &
             (productions_df['local'].isin(locations)) &
             (productions_df['product'].isin(products))
         ]
@@ -626,62 +574,6 @@ def show_dashboard():
     else:
         st.info("Nenhum dado de produção disponível.")
     st.markdown('</div>', unsafe_allow_html=True)
-    
-    # Novo gráfico de correlação com clima
-    st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.subheader("Correlação com Condições Climáticas")
-    
-    if not productions_df.empty and 'temperature' in productions_df.columns and 'humidity' in productions_df.columns:
-        # Preparar dados para o gráfico de radar
-        climate_data = productions_df[['temperature', 'humidity', 'rain', 'first_quality']].copy()
-        climate_data = climate_data.dropna()
-        
-        if not climate_data.empty:
-            # Agrupar por faixas de temperatura e umidade
-            climate_data['temp_range'] = pd.cut(climate_data['temperature'], bins=5)
-            climate_data['humidity_range'] = pd.cut(climate_data['humidity'], bins=5)
-            
-            # Calcular produção média por faixa
-            temp_production = climate_data.groupby('temp_range')['first_quality'].mean().reset_index()
-            humidity_production = climate_data.groupby('humidity_range')['first_quality'].mean().reset_index()
-            
-            # Criar gráfico de radar
-            fig = go.Figure()
-            
-            fig.add_trace(go.Scatterpolar(
-                r=temp_production['first_quality'].values,
-                theta=temp_production['temp_range'].astype(str).values,
-                fill='toself',
-                name='Temperatura',
-                line_color='#2ecc71'
-            ))
-            
-            fig.add_trace(go.Scatterpolar(
-                r=humidity_production['first_quality'].values,
-                theta=humidity_production['humidity_range'].astype(str).values,
-                fill='toself',
-                name='Umidade',
-                line_color='#3498db'
-            ))
-            
-            fig.update_layout(
-                polar=dict(
-                    radialaxis=dict(
-                        visible=True,
-                        range=[0, max(temp_production['first_quality'].max(), humidity_production['first_quality'].max()) * 1.1]
-                    )),
-                showlegend=True,
-                plot_bgcolor='rgba(0,0,0,0)', 
-                paper_bgcolor='rgba(0,0,0,0)',
-                font=dict(color='white')
-            )
-            
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("Dados insuficientes para análise climática.")
-    else:
-        st.info("Nenhum dado climático disponível para análise.")
-    st.markdown('</div>', unsafe_allow_html=True)
 
 # ================================
 # PÁGINA DE CADASTRO DE PRODUÇÃO
@@ -746,6 +638,7 @@ def show_production_page():
                 )
                 if success:
                     st.success("Produção registrada com sucesso!")
+                    st.rerun()
                 else:
                     st.error("Erro ao salvar produção. Verifique a conexão com o banco de dados.")
     
@@ -756,14 +649,15 @@ def show_production_page():
         st.subheader("Produções Recentes")
         
         # Adicionar opção de exclusão
-        for idx, row in productions_df.tail(10).iterrows():
+        for idx, row in productions_df.head(10).iterrows():
             col1, col2, col3, col4 = st.columns([3, 2, 2, 1])
             with col1:
                 st.write(f"{row['date']} - {row['product']} em {row['local']}")
             with col2:
                 st.write(f"1ª: {row['first_quality']}cx, 2ª: {row['second_quality']}cx")
             with col3:
-                st.write(f"T: {row['temperature']}°C, U: {row['humidity']}%")
+                if pd.notna(row['temperature']):
+                    st.write(f"T: {row['temperature']}°C, U: {row['humidity']}%")
             with col4:
                 if st.button("🗑️", key=f"delete_{row['id']}"):
                     if delete_production(row['id']):
@@ -776,34 +670,11 @@ def show_production_page():
         st.markdown("---")
         st.subheader("Exportar Dados")
         
-        # Filtrar dados para exportação
-        min_date = pd.to_datetime(productions_df['date']).min().date()
-        max_date = pd.to_datetime(productions_df['date']).max().date()
-        
-        export_date_range = st.date_input(
-            "Período para Exportação",
-            value=(min_date, max_date),
-            min_value=min_date,
-            max_value=max_date,
-            key="export_date_range"
-        )
-        
-        try:
-            export_start_date, export_end_date = export_date_range
-        except:
-            export_start_date, export_end_date = min_date, max_date
-        
-        # Filtrar dados para exportação
-        export_df = productions_df[
-            (pd.to_datetime(productions_df['date']).dt.date >= export_start_date) &
-            (pd.to_datetime(productions_df['date']).dt.date <= export_end_date)
-        ]
-        
-        if not export_df.empty:
+        if not productions_df.empty:
             # Criar Excel em memória
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                export_df.to_excel(writer, sheet_name='Produções', index=False)
+                productions_df.to_excel(writer, sheet_name='Produções', index=False)
                 
                 # Adicionar formatação
                 workbook = writer.book
@@ -820,12 +691,12 @@ def show_production_page():
                 })
                 
                 # Aplicar formatação aos cabeçalhos
-                for col_num, value in enumerate(export_df.columns.values):
+                for col_num, value in enumerate(productions_df.columns.values):
                     worksheet.write(0, col_num, value, header_format)
                 
                 # Ajustar largura das colunas
-                for idx, col in enumerate(export_df.columns):
-                    max_len = max(export_df[col].astype(str).map(len).max(), len(col)) + 2
+                for idx, col in enumerate(productions_df.columns):
+                    max_len = max(productions_df[col].astype(str).map(len).max(), len(col)) + 2
                     worksheet.set_column(idx, idx, max_len)
             
             output.seek(0)
@@ -834,11 +705,9 @@ def show_production_page():
             st.download_button(
                 label="📥 Baixar Dados em Excel",
                 data=output,
-                file_name=f"producoes_{export_start_date}_{export_end_date}.xlsx",
+                file_name=f"producoes_{datetime.now().strftime('%Y%m%d')}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
-        else:
-            st.warning("Nenhum dado disponível para o período selecionado.")
 
 # ================================
 # PÁGINA DE CADASTRO DE INSUMOS
@@ -879,6 +748,7 @@ def show_inputs_page():
                 )
                 if success:
                     st.success("Insumo registrado com sucesso!")
+                    st.rerun()
                 else:
                     st.error("Erro ao salvar insumo. Verifique a conexão com o banco de dados.")
     
@@ -887,40 +757,17 @@ def show_inputs_page():
         
     if not inputs_df.empty:
         st.subheader("Insumos Recentes")
-        st.dataframe(inputs_df.tail(10), use_container_width=True)
+        st.dataframe(inputs_df.head(10), use_container_width=True)
         
         # Adicionar botão para baixar dados em Excel
         st.markdown("---")
         st.subheader("Exportar Dados")
         
-        # Filtrar dados para exportação
-        min_date = pd.to_datetime(inputs_df['date']).min().date()
-        max_date = pd.to_datetime(inputs_df['date']).max().date()
-        
-        export_date_range = st.date_input(
-            "Período para Exportação",
-            value=(min_date, max_date),
-            min_value=min_date,
-            max_value=max_date,
-            key="export_inputs_date_range"
-        )
-        
-        try:
-            export_start_date, export_end_date = export_date_range
-        except:
-            export_start_date, export_end_date = min_date, max_date
-        
-        # Filtrar dados para exportação
-        export_df = inputs_df[
-            (pd.to_datetime(inputs_df['date']).dt.date >= export_start_date) &
-            (pd.to_datetime(inputs_df['date']).dt.date <= export_end_date)
-        ]
-        
-        if not export_df.empty:
+        if not inputs_df.empty:
             # Criar Excel em memória
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                export_df.to_excel(writer, sheet_name='Insumos', index=False)
+                inputs_df.to_excel(writer, sheet_name='Insumos', index=False)
                 
                 # Adicionar formatação
                 workbook = writer.book
@@ -937,12 +784,12 @@ def show_inputs_page():
                 })
                 
                 # Aplicar formatação aos cabeçalhos
-                for col_num, value in enumerate(export_df.columns.values):
+                for col_num, value in enumerate(inputs_df.columns.values):
                     worksheet.write(0, col_num, value, header_format)
                 
                 # Ajustar largura das colunas
-                for idx, col in enumerate(export_df.columns):
-                    max_len = max(export_df[col].astype(str).map(len).max(), len(col)) + 2
+                for idx, col in enumerate(inputs_df.columns):
+                    max_len = max(inputs_df[col].astype(str).map(len).max(), len(col)) + 2
                     worksheet.set_column(idx, idx, max_len)
             
             output.seek(0)
@@ -951,11 +798,9 @@ def show_inputs_page():
             st.download_button(
                 label="📥 Baixar Dados em Excel",
                 data=output,
-                file_name=f"insumos_{export_start_date}_{export_end_date}.xlsx",
+                file_name=f"insumos_{datetime.now().strftime('%Y%m%d')}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
-        else:
-            st.warning("Nenhum dado disponível para o período selecionado.")
 
 # ================================
 # PÁGINA DE CONFIGURAÇÕES
@@ -997,7 +842,7 @@ def show_settings_page():
                     st.error("Erro ao salvar preços. Verifique a conexão com o banco de dados.")
 
 # ================================
-# PÁGINA DE RELATÓRIOS (REFATORADA)
+# PÁGINA DE RELATÓRIOS
 # ================================
 def show_reports_page():
     st.title("📋 Relatórios")
@@ -1009,301 +854,113 @@ def show_reports_page():
         st.warning("Nenhum dado disponível para gerar relatórios.")
         return
     
-    # Filtros para relatórios - REFATORADO COM MAIS FILTROS
+    # Filtros para relatórios
     st.sidebar.header("Filtros do Relatório")
     
-    min_date = pd.to_datetime(productions_df['date']).min().date()
-    max_date = pd.to_datetime(productions_df['date']).max().date()
-    
-    report_date_range = st.sidebar.date_input(
-        "Período do Relatório",
-        value=(min_date, max_date),
-        min_value=min_date,
-        max_value=max_date
-    )
-    
-    # NOVOS FILTROS ADICIONADOS
-    # Filtro por local
-    all_locations = productions_df['local'].unique().tolist()
-    selected_locations = st.sidebar.multiselect(
-        "Filtrar por Local",
-        options=all_locations,
-        default=all_locations,
-        help="Selecione os locais para filtrar"
-    )
-    
-    # Filtro por cultura
-    all_products = productions_df['product'].unique().tolist()
-    selected_products = st.sidebar.multiselect(
-        "Filtrar por Cultura",
-        options=all_products,
-        default=all_products,
-        help="Selecione as culturas para filtrar"
-    )
-    
-    # Tipo de relatório
-    report_type = st.sidebar.selectbox(
-        "Tipo de Relatório",
-        ["Produção Detalhada", "Resumo Financeiro", "Análise de Qualidade", "Custos e Insumos", "Análise por Local"]
-    )
-    
-    try:
-        start_date, end_date = report_date_range
-    except:
-        start_date, end_date = min_date, max_date
-    
-    # Filtrar dados - REFATORADO COM NOVOS FILTROS
-    filtered_prod = productions_df[
-        (pd.to_datetime(productions_df['date']).dt.date >= start_date) &
-        (pd.to_datetime(productions_df['date']).dt.date <= end_date) &
-        (productions_df['local'].isin(selected_locations)) &
-        (productions_df['product'].isin(selected_products))
-    ]
-    
-    filtered_inputs = inputs_df[
-        (pd.to_datetime(inputs_df['date']).dt.date >= start_date) &
-        (pd.to_datetime(inputs_df['date']).dt.date <= end_date)
-    ]
-    
-    if filtered_prod.empty:
-        st.warning("Nenhum dado encontrado para o período selecionado.")
-        return
-    
-    # Exibir resumo dos filtros aplicados
-    st.sidebar.markdown("---")
-    st.sidebar.subheader("Resumo dos Filtros")
-    st.sidebar.write(f"**Período:** {start_date} a {end_date}")
-    st.sidebar.write(f"**Locais selecionados:** {len(selected_locations)}")
-    st.sidebar.write(f"**Culturas selecionadas:** {len(selected_products)}")
-    st.sidebar.write(f"**Registros encontrados:** {len(filtered_prod)}")
-    
-    # Gerar relatório selecionado
-    if report_type == "Produção Detalhada":
-        st.header("📊 Relatório de Produção Detalhada")
-        st.write(f"**Período:** {start_date} a {end_date}")
-        st.write(f"**Locais:** {', '.join(selected_locations)}")
-        st.write(f"**Culturas:** {', '.join(selected_products)}")
+    if not productions_df.empty:
+        productions_df['date'] = pd.to_datetime(productions_df['date'])
+        min_date = productions_df['date'].min().date()
+        max_date = productions_df['date'].max().date()
         
-        # Resumo estatístico
-        total_first = filtered_prod['first_quality'].sum()
-        total_second = filtered_prod['second_quality'].sum()
-        total_boxes = total_first + total_second
+        report_date_range = st.sidebar.date_input(
+            "Período do Relatório",
+            value=(min_date, max_date),
+            min_value=min_date,
+            max_value=max_date
+        )
         
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            st.metric("Total de Caixas", f"{total_boxes:,.0f}")
-        with col2:
-            st.metric("1ª Qualidade", f"{total_first:,.0f}")
-        with col3:
-            st.metric("2ª Qualidade", f"{total_second:,.0f}")
-        with col4:
-            st.metric("Média 1ª Qualidade", f"{(total_first/total_boxes*100 if total_boxes > 0 else 0):.1f}%")
+        # Filtro por local
+        all_locations = productions_df['local'].unique().tolist()
+        selected_locations = st.sidebar.multiselect(
+            "Filtrar por Local",
+            options=all_locations,
+            default=all_locations
+        )
         
-        # Dados detalhados
-        st.subheader("Dados Detalhados")
-        st.dataframe(filtered_prod, use_container_width=True)
+        # Filtro por cultura
+        all_products = productions_df['product'].unique().tolist()
+        selected_products = st.sidebar.multiselect(
+            "Filtrar por Cultura",
+            options=all_products,
+            default=all_products
+        )
         
-        # Exportar dados
-        if st.button("📥 Exportar para Excel", key="export_detailed"):
-            export_to_excel(filtered_prod, "relatorio_producao_detalhada", start_date, end_date)
-    
-    elif report_type == "Resumo Financeiro":
-        st.header("💰 Relatório Financeiro")
-        st.write(f"**Período:** {start_date} a {end_date}")
-        st.write(f"**Locais:** {', '.join(selected_locations)}")
-        st.write(f"**Culturas:** {', '.join(selected_products)}")
+        # Tipo de relatório
+        report_type = st.sidebar.selectbox(
+            "Tipo de Relatório",
+            ["Produção Detalhada", "Resumo Financeiro", "Análise de Qualidade", "Custos e Insumos"]
+        )
         
-        financials = calculate_financials(filtered_prod, filtered_inputs)
+        try:
+            start_date, end_date = report_date_range
+        except:
+            start_date, end_date = min_date, max_date
         
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            st.metric("Receita Total", f"R$ {financials['total_revenue']:,.2f}")
-        with col2:
-            st.metric("Custos Totais", f"R$ {financials['total_costs']:,.2f}")
-        with col3:
-            st.metric("Lucro Líquido", f"R$ {financials['profit']:,.2f}")
-        with col4:
-            st.metric("Margem de Lucro", f"{financials['profit_margin']:.1f}%")
+        # Filtrar dados
+        filtered_prod = productions_df[
+            (productions_df['date'].dt.date >= start_date) &
+            (productions_df['date'].dt.date <= end_date) &
+            (productions_df['local'].isin(selected_locations)) &
+            (productions_df['product'].isin(selected_products))
+        ]
         
-        # Detalhamento por produto
-        st.subheader("Receita por Produto")
-        price_config = load_price_config()
-        revenue_by_product = []
+        filtered_inputs = inputs_df[
+            (pd.to_datetime(inputs_df['date']).dt.date >= start_date) &
+            (pd.to_datetime(inputs_df['date']).dt.date <= end_date)
+        ] if not inputs_df.empty else pd.DataFrame()
         
-        for product in filtered_prod['product'].unique():
-            product_data = filtered_prod[filtered_prod['product'] == product]
-            product_price = price_config[price_config['product'] == product]
+        if filtered_prod.empty:
+            st.warning("Nenhum dado encontrado para o período selecionado.")
+            return
+        
+        # Gerar relatório selecionado
+        if report_type == "Produção Detalhada":
+            st.header("📊 Relatório de Produção Detalhada")
+            st.dataframe(filtered_prod, use_container_width=True)
             
-            if not product_price.empty:
-                first_price = product_price['first_quality_price'].values[0]
-                second_price = product_price['second_quality_price'].values[0]
-            else:
-                first_price, second_price = 10.0, 5.0
+        elif report_type == "Resumo Financeiro":
+            st.header("💰 Relatório Financeiro")
+            financials = calculate_financials(filtered_prod, filtered_inputs)
             
-            first_revenue = product_data['first_quality'].sum() * first_price
-            second_revenue = product_data['second_quality'].sum() * second_price
-            total_revenue = first_revenue + second_revenue
-            
-            revenue_by_product.append({
-                'Produto': product,
-                '1ª Qualidade (R$)': first_revenue,
-                '2ª Qualidade (R$)': second_revenue,
-                'Receita Total (R$)': first_revenue + second_revenue
-            })
-        
-        revenue_df = pd.DataFrame(revenue_by_product)
-        st.dataframe(revenue_df, use_container_width=True)
-        
-        # Gráfico de receita por produto
-        fig = px.bar(revenue_df, x='Produto', y='Receita Total (R$)', 
-                     title="Receita por Cultura",
-                     color_discrete_sequence=['#2d5016'])
-        fig.update_layout(plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
-                         font=dict(color='white'))
-        st.plotly_chart(fig, use_container_width=True)
-        
-        # Exportar dados
-        if st.button("📥 Exportar para Excel", key="export_financial"):
-            export_to_excel(revenue_df, "relatorio_financeiro", start_date, end_date)
-    
-    elif report_type == "Análise de Qualidade":
-        st.header("🔍 Análise de Qualidade")
-        st.write(f"**Período:** {start_date} a {end_date}")
-        st.write(f"**Locais:** {', '.join(selected_locations)}")
-        st.write(f"**Culturas:** {', '.join(selected_products)}")
-        
-        quality_data = []
-        for product in filtered_prod['product'].unique():
-            product_data = filtered_prod[filtered_prod['product'] == product]
-            total = product_data['first_quality'].sum() + product_data['second_quality'].sum()
-            
-            if total > 0:
-                first_percent = (product_data['first_quality'].sum() / total * 100)
-                second_percent = (product_data['second_quality'].sum() / total * 100)
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("Receita Total", f"R$ {financials['total_revenue']:,.2f}")
+            with col2:
+                st.metric("Custos Totais", f"R$ {financials['total_costs']:,.2f}")
+            with col3:
+                st.metric("Lucro Líquido", f"R$ {financials['profit']:,.2f}")
+            with col4:
+                st.metric("Margem de Lucro", f"{financials['profit_margin']:.1f}%")
                 
-                quality_data.append({
-                    'Produto': product,
-                    'Total Caixas': total,
-                    '1ª Qualidade (%)': first_percent,
-                    '2ª Qualidade (%)': second_percent,
-                    '1ª Qualidade (cx)': product_data['first_quality'].sum(),
-                    '2ª Qualidade (cx)': product_data['second_quality'].sum()
-                })
-        
-        quality_df = pd.DataFrame(quality_data)
-        st.dataframe(quality_df, use_container_width=True)
-        
-        # Gráfico de qualidade
-        fig = px.bar(quality_df, x='Produto', y=['1ª Qualidade (cx)', '2ª Qualidade (cx)'], 
-                     barmode='stack', title="Distribuição de Qualidade por Produto",
-                     color_discrete_sequence=['#2ecc71', '#f1c40f'])
-        fig.update_layout(plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
-                         font=dict(color='white'))
-        st.plotly_chart(fig, use_container_width=True)
-        
-        # Exportar dados
-        if st.button("📥 Exportar para Excel", key="export_quality"):
-            export_to_excel(quality_df, "relatorio_qualidade", start_date, end_date)
-    
-    elif report_type == "Custos e Insumos":
-        st.header("💸 Análise de Custos e Insumos")
-        st.write(f"**Período:** {start_date} a {end_date}")
-        
-        if not filtered_inputs.empty:
-            # Custos por tipo
-            costs_by_type = filtered_inputs.groupby('type')['cost'].sum().reset_index()
-            fig = px.pie(costs_by_type, values='cost', names='type', 
-                         title="Distribuição de Custos por Tipo",
-                         color_discrete_sequence=px.colors.qualitative.Set3)
-            fig.update_layout(plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
-                             font=dict(color='white'))
-            st.plotly_chart(fig, use_container_width=True)
+        elif report_type == "Análise de Qualidade":
+            st.header("🔍 Análise de Qualidade")
             
-            # Tabela de custos detalhada
-            st.subheader("Detalhamento de Custos")
-            st.dataframe(filtered_inputs, use_container_width=True)
+            quality_data = []
+            for product in filtered_prod['product'].unique():
+                product_data = filtered_prod[filtered_prod['product'] == product]
+                total = product_data['first_quality'].sum() + product_data['second_quality'].sum()
+                
+                if total > 0:
+                    first_percent = (product_data['first_quality'].sum() / total * 100)
+                    second_percent = (product_data['second_quality'].sum() / total * 100)
+                    
+                    quality_data.append({
+                        'Produto': product,
+                        'Total Caixas': total,
+                        '1ª Qualidade (%)': first_percent,
+                        '2ª Qualidade (%)': second_percent
+                    })
             
-            # Exportar dados
-            if st.button("📥 Exportar para Excel", key="export_costs"):
-                export_to_excel(filtered_inputs, "relatorio_custos", start_date, end_date)
-        else:
-            st.info("Nenhum dado de insumos/custos para o período selecionado.")
-    
-    elif report_type == "Análise por Local":
-        st.header("🏭 Análise de Produção por Local")
-        st.write(f"**Período:** {start_date} a {end_date}")
-        st.write(f"**Culturas:** {', '.join(selected_products)}")
-        
-        # Análise por local
-        production_by_location = filtered_prod.groupby('local').agg({
-            'first_quality': 'sum',
-            'second_quality': 'sum',
-            'product': 'count'
-        }).reset_index()
-        
-        production_by_location['total'] = production_by_location['first_quality'] + production_by_location['second_quality']
-        production_by_location['percentual_1a'] = (production_by_location['first_quality'] / production_by_location['total'] * 100).round(1)
-        
-        st.subheader("Produção por Local")
-        st.dataframe(production_by_location, use_container_width=True)
-        
-        # Gráfico de produção por local
-        fig = px.bar(production_by_location, x='local', y='total', 
-                     title="Produção Total por Local",
-                     color='total', color_continuous_scale='viridis')
-        fig.update_layout(plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
-                         font=dict(color='white'))
-        st.plotly_chart(fig, use_container_width=True)
-        
-        # Gráfico de qualidade por local
-        fig = px.bar(production_by_location, x='local', y=['first_quality', 'second_quality'], 
-                     barmode='stack', title="Qualidade por Local",
-                     color_discrete_sequence=['#2ecc71', '#f1c40f'])
-        fig.update_layout(plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
-                         font=dict(color='white'))
-        st.plotly_chart(fig, use_container_width=True)
-        
-        # Exportar dados
-        if st.button("📥 Exportar para Excel", key="export_location"):
-            export_to_excel(production_by_location, "relatorio_por_local", start_date, end_date)
-
-# Função auxiliar para exportar dados para Excel
-def export_to_excel(dataframe, report_name, start_date, end_date):
-    """Exporta dataframe para Excel"""
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        dataframe.to_excel(writer, sheet_name='Relatório', index=False)
-        
-        workbook = writer.book
-        worksheet = writer.sheets['Relatório']
-        
-        # Formatar cabeçalhos
-        header_format = workbook.add_format({
-            'bold': True,
-            'text_wrap': True,
-            'valign': 'top',
-            'fg_color': '#2d5016',
-            'font_color': 'white',
-            'border': 1
-        })
-        
-        # Aplicar formatação aos cabeçalhos
-        for col_num, value in enumerate(dataframe.columns.values):
-            worksheet.write(0, col_num, value, header_format)
-        
-        # Ajustar largura das colunas
-        for idx, col in enumerate(dataframe.columns):
-            max_len = max(dataframe[col].astype(str).map(len).max(), len(col)) + 2
-            worksheet.set_column(idx, idx, max_len)
-    
-    output.seek(0)
-    
-    st.download_button(
-        label="⬇️ Baixar Arquivo Excel",
-        data=output,
-        file_name=f"{report_name}_{start_date}_{end_date}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+            quality_df = pd.DataFrame(quality_data)
+            st.dataframe(quality_df, use_container_width=True)
+            
+        elif report_type == "Custos e Insumos":
+            st.header("💸 Análise de Custos e Insumos")
+            
+            if not filtered_inputs.empty:
+                st.dataframe(filtered_inputs, use_container_width=True)
+            else:
+                st.info("Nenhum dado de insumos/custos para o período selecionado.")
 
 # ================================
 # FUNÇÃO PRINCIPAL
