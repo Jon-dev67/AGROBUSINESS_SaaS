@@ -67,6 +67,11 @@ def apply_dark_theme():
     .success {
         color: #2ecc71;
     }
+    .stForm {
+        background-color: #1a1a1a;
+        border-radius: 10px;
+        padding: 20px;
+    }
     </style>
     """, unsafe_allow_html=True)
 
@@ -109,7 +114,8 @@ def init_db():
         st.error(f"❌ Erro ao conectar com o banco de dados: {str(e)}")
         return False
 
-def save_production(date, local, product, first_quality, second_quality, temperature, humidity, rain, weather_data):
+def save_production(date, local, product, first_quality, second_quality, 
+                    first_price, second_price, temperature, humidity, rain, weather_data):
     supabase = get_supabase_client()
     if supabase is None:
         return False
@@ -121,10 +127,13 @@ def save_production(date, local, product, first_quality, second_quality, tempera
             "product": product,
             "first_quality": float(first_quality),
             "second_quality": float(second_quality),
+            "first_price": float(first_price),
+            "second_price": float(second_price),
             "temperature": float(temperature) if temperature else None,
             "humidity": float(humidity) if humidity else None,
             "rain": float(rain) if rain else None,
-            "weather_data": weather_data
+            "weather_data": weather_data,
+            "created_at": datetime.now().isoformat()
         }
         result = supabase.table("productions").insert(data).execute()
         return True
@@ -141,6 +150,13 @@ def load_productions():
         result = supabase.table("productions").select("*").order("created_at", desc=True).execute()
         if hasattr(result, 'data'):
             df = pd.DataFrame(result.data)
+            if not df.empty:
+                # Converter colunas numéricas
+                numeric_cols = ['first_quality', 'second_quality', 'first_price', 'second_price', 
+                              'temperature', 'humidity', 'rain']
+                for col in numeric_cols:
+                    if col in df.columns:
+                        df[col] = pd.to_numeric(df[col], errors='coerce')
             return df
         return pd.DataFrame()
     except Exception as e:
@@ -172,7 +188,8 @@ def save_input(date, input_type, description, quantity, unit, cost, location):
             "quantity": float(quantity),
             "unit": unit,
             "cost": float(cost),
-            "location": location
+            "location": location,
+            "created_at": datetime.now().isoformat()
         }
         result = supabase.table("inputs").insert(data).execute()
         return True
@@ -189,44 +206,17 @@ def load_inputs():
         result = supabase.table("inputs").select("*").order("created_at", desc=True).execute()
         if hasattr(result, 'data'):
             df = pd.DataFrame(result.data)
+            if not df.empty:
+                # Converter colunas numéricas
+                numeric_cols = ['quantity', 'cost']
+                for col in numeric_cols:
+                    if col in df.columns:
+                        df[col] = pd.to_numeric(df[col], errors='coerce')
             return df
         return pd.DataFrame()
     except Exception as e:
         st.error(f"Erro ao carregar insumos: {str(e)}")
         return pd.DataFrame()
-
-def load_price_config():
-    supabase = get_supabase_client()
-    if supabase is None:
-        return pd.DataFrame()
-    
-    try:
-        result = supabase.table("price_config").select("*").execute()
-        if hasattr(result, 'data'):
-            df = pd.DataFrame(result.data)
-            return df
-        return pd.DataFrame()
-    except Exception as e:
-        st.error(f"Erro ao carregar configurações de preço: {str(e)}")
-        return pd.DataFrame()
-
-def save_price_config(product, first_price, second_price):
-    supabase = get_supabase_client()
-    if supabase is None:
-        return False
-    
-    try:
-        data = {
-            "product": product,
-            "first_quality_price": float(first_price),
-            "second_quality_price": float(second_price)
-        }
-        # Usar upsert para inserir ou atualizar
-        result = supabase.table("price_config").upsert(data).execute()
-        return True
-    except Exception as e:
-        st.error(f"Erro ao salvar configuração de preço: {str(e)}")
-        return False
 
 # ================================
 # FUNÇÕES DE API CLIMÁTICA
@@ -259,7 +249,7 @@ def get_weather_data(city):
 # FUNÇÕES DE CÁLCULO FINANCEIRO
 # ================================
 def calculate_financials(productions_df, inputs_df):
-    price_config = load_price_config()
+    """Calcula métricas financeiras com base nos dados de produção e insumos"""
     
     if productions_df.empty:
         return {
@@ -268,40 +258,38 @@ def calculate_financials(productions_df, inputs_df):
             "second_quality_revenue": 0,
             "total_costs": 0,
             "profit": 0,
-            "profit_margin": 0
+            "profit_margin": 0,
+            "avg_first_price": 0,
+            "avg_second_price": 0
         }
     
-    # Calcular receita
-    revenue_data = []
-    for _, row in productions_df.iterrows():
-        product = row['product']
-        price_row = price_config[price_config['product'] == product]
-        
-        if not price_row.empty:
-            first_price = price_row['first_quality_price'].values[0]
-            second_price = price_row['second_quality_price'].values[0]
-        else:
-            # Preços padrão se não encontrado
-            first_price = 10.0
-            second_price = 5.0
-        
-        first_revenue = row['first_quality'] * first_price
-        second_revenue = row['second_quality'] * second_price
-        
-        revenue_data.append({
-            'product': product,
-            'first_revenue': first_revenue,
-            'second_revenue': second_revenue,
-            'total_revenue': first_revenue + second_revenue
-        })
+    # Calcular receita com os preços registrados na produção
+    productions_df = productions_df.copy()
     
-    revenue_df = pd.DataFrame(revenue_data)
-    total_revenue = revenue_df['total_revenue'].sum()
-    first_quality_revenue = revenue_df['first_revenue'].sum()
-    second_quality_revenue = revenue_df['second_revenue'].sum()
+    # Garantir que as colunas de preço existam e sejam numéricas
+    if 'first_price' not in productions_df.columns:
+        productions_df['first_price'] = 0
+    if 'second_price' not in productions_df.columns:
+        productions_df['second_price'] = 0
+    
+    productions_df['first_price'] = pd.to_numeric(productions_df['first_price'], errors='coerce').fillna(0)
+    productions_df['second_price'] = pd.to_numeric(productions_df['second_price'], errors='coerce').fillna(0)
+    
+    # Calcular receitas
+    productions_df['first_revenue'] = productions_df['first_quality'] * productions_df['first_price']
+    productions_df['second_revenue'] = productions_df['second_quality'] * productions_df['second_price']
+    productions_df['total_revenue_item'] = productions_df['first_revenue'] + productions_df['second_revenue']
+    
+    total_revenue = productions_df['total_revenue_item'].sum()
+    first_quality_revenue = productions_df['first_revenue'].sum()
+    second_quality_revenue = productions_df['second_revenue'].sum()
+    
+    # Calcular preços médios
+    avg_first_price = productions_df['first_price'].mean() if not productions_df['first_price'].empty else 0
+    avg_second_price = productions_df['second_price'].mean() if not productions_df['second_price'].empty else 0
     
     # Calcular custos
-    total_costs = inputs_df['cost'].sum() if not inputs_df.empty else 0
+    total_costs = inputs_df['cost'].sum() if not inputs_df.empty and 'cost' in inputs_df.columns else 0
     
     # Calcular lucro e margem
     profit = total_revenue - total_costs
@@ -313,7 +301,9 @@ def calculate_financials(productions_df, inputs_df):
         "second_quality_revenue": second_quality_revenue,
         "total_costs": total_costs,
         "profit": profit,
-        "profit_margin": profit_margin
+        "profit_margin": profit_margin,
+        "avg_first_price": avg_first_price,
+        "avg_second_price": avg_second_price
     }
 
 # ================================
@@ -330,41 +320,54 @@ def show_dashboard():
     st.sidebar.header("Filtros")
     
     if not productions_df.empty:
-        productions_df['date'] = pd.to_datetime(productions_df['date'])
-        min_date = productions_df['date'].min().date()
-        max_date = productions_df['date'].max().date()
-        
-        date_range = st.sidebar.date_input(
-            "Período",
-            value=(min_date, max_date),
-            min_value=min_date,
-            max_value=max_date
-        )
-        
-        locations = st.sidebar.multiselect(
-            "Locais",
-            options=productions_df['local'].unique(),
-            default=productions_df['local'].unique()
-        )
-        
-        products = st.sidebar.multiselect(
-            "Culturas",
-            options=productions_df['product'].unique(),
-            default=productions_df['product'].unique()
-        )
-        
-        # Aplicar filtros
-        try:
-            start_date, end_date = date_range
-        except:
-            start_date, end_date = min_date, max_date
-        
-        filtered_df = productions_df[
-            (productions_df['date'].dt.date >= start_date) &
-            (productions_df['date'].dt.date <= end_date) &
-            (productions_df['local'].isin(locations)) &
-            (productions_df['product'].isin(products))
-        ]
+        # Garantir que a coluna date existe e é datetime
+        if 'date' in productions_df.columns:
+            productions_df['date'] = pd.to_datetime(productions_df['date'], errors='coerce')
+            productions_df = productions_df.dropna(subset=['date'])
+            
+            if not productions_df.empty:
+                min_date = productions_df['date'].min().date()
+                max_date = productions_df['date'].max().date()
+                
+                date_range = st.sidebar.date_input(
+                    "Período",
+                    value=(min_date, max_date),
+                    min_value=min_date,
+                    max_value=max_date
+                )
+                
+                locations = st.sidebar.multiselect(
+                    "Locais",
+                    options=productions_df['local'].unique() if 'local' in productions_df.columns else [],
+                    default=productions_df['local'].unique()[:5] if 'local' in productions_df.columns else []
+                )
+                
+                products = st.sidebar.multiselect(
+                    "Culturas",
+                    options=productions_df['product'].unique() if 'product' in productions_df.columns else [],
+                    default=productions_df['product'].unique()[:5] if 'product' in productions_df.columns else []
+                )
+                
+                # Aplicar filtros
+                try:
+                    start_date, end_date = date_range
+                except:
+                    start_date, end_date = min_date, max_date
+                
+                filtered_df = productions_df[
+                    (productions_df['date'].dt.date >= start_date) &
+                    (productions_df['date'].dt.date <= end_date)
+                ]
+                
+                if locations:
+                    filtered_df = filtered_df[filtered_df['local'].isin(locations)]
+                if products:
+                    filtered_df = filtered_df[filtered_df['product'].isin(products)]
+            else:
+                filtered_df = pd.DataFrame()
+        else:
+            filtered_df = productions_df
+            st.sidebar.warning("Coluna 'date' não encontrada nos dados")
     else:
         filtered_df = pd.DataFrame()
     
@@ -376,10 +379,12 @@ def show_dashboard():
     
     with col1:
         st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-        if not filtered_df.empty:
+        if not filtered_df.empty and 'first_quality' in filtered_df.columns and 'second_quality' in filtered_df.columns:
             total_boxes = filtered_df['first_quality'].sum() + filtered_df['second_quality'].sum()
+        elif not productions_df.empty and 'first_quality' in productions_df.columns and 'second_quality' in productions_df.columns:
+            total_boxes = productions_df['first_quality'].sum() + productions_df['second_quality'].sum()
         else:
-            total_boxes = productions_df['first_quality'].sum() + productions_df['second_quality'].sum() if not productions_df.empty else 0
+            total_boxes = 0
         st.metric("Total Produzido", f"{total_boxes:,.0f} cx")
         st.markdown('</div>', unsafe_allow_html=True)
     
@@ -395,7 +400,23 @@ def show_dashboard():
     
     with col4:
         st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-        st.metric("Lucro Líquido", f"R$ {financials['profit']:,.2f}", f"{financials['profit_margin']:.1f}%")
+        profit_color = "green" if financials['profit'] >= 0 else "red"
+        st.metric("Lucro Líquido", 
+                 f"R$ {financials['profit']:,.2f}", 
+                 f"{financials['profit_margin']:.1f}%")
+        st.markdown('</div>', unsafe_allow_html=True)
+    
+    # Preços médios
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown('<div class="metric-card">', unsafe_allow_html=True)
+        st.metric("Preço Médio 1ª Qualidade", f"R$ {financials['avg_first_price']:,.2f}")
+        st.markdown('</div>', unsafe_allow_html=True)
+    
+    with col2:
+        st.markdown('<div class="metric-card">', unsafe_allow_html=True)
+        st.metric("Preço Médio 2ª Qualidade", f"R$ {financials['avg_second_price']:,.2f}")
         st.markdown('</div>', unsafe_allow_html=True)
     
     # Gráficos - Primeira linha
@@ -405,24 +426,23 @@ def show_dashboard():
         st.markdown('<div class="card">', unsafe_allow_html=True)
         st.subheader("Produção por Cultura")
         
-        if not filtered_df.empty:
-            production_by_product = filtered_df.groupby('product')[['first_quality', 'second_quality']].sum().reset_index()
-            production_by_product['total'] = production_by_product['first_quality'] + production_by_product['second_quality']
+        if not filtered_df.empty and 'product' in filtered_df.columns:
+            production_by_product = filtered_df.groupby('product').agg({
+                'first_quality': 'sum',
+                'second_quality': 'sum'
+            }).reset_index()
             
-            fig = px.bar(production_by_product, x='product', y='total', 
-                         color='product', color_discrete_sequence=px.colors.qualitative.Set3)
-            fig.update_layout(showlegend=False, plot_bgcolor='rgba(0,0,0,0)', 
-                             paper_bgcolor='rgba(0,0,0,0)', font=dict(color='white'))
-            st.plotly_chart(fig, use_container_width=True)
-        elif not productions_df.empty:
-            production_by_product = productions_df.groupby('product')[['first_quality', 'second_quality']].sum().reset_index()
-            production_by_product['total'] = production_by_product['first_quality'] + production_by_product['second_quality']
-            
-            fig = px.bar(production_by_product, x='product', y='total', 
-                         color='product', color_discrete_sequence=px.colors.qualitative.Set3)
-            fig.update_layout(showlegend=False, plot_bgcolor='rgba(0,0,0,0)', 
-                             paper_bgcolor='rgba(0,0,0,0)', font=dict(color='white'))
-            st.plotly_chart(fig, use_container_width=True)
+            if not production_by_product.empty:
+                production_by_product['total'] = production_by_product['first_quality'] + production_by_product['second_quality']
+                
+                fig = px.bar(production_by_product, x='product', y='total', 
+                            color='product', color_discrete_sequence=px.colors.qualitative.Set3)
+                fig.update_layout(showlegend=False, plot_bgcolor='rgba(0,0,0,0)', 
+                                paper_bgcolor='rgba(0,0,0,0)', font=dict(color='white'),
+                                xaxis_title="Cultura", yaxis_title="Total de Caixas")
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.info("Nenhum dado disponível para o gráfico.")
         else:
             st.info("Nenhum dado de produção disponível.")
         st.markdown('</div>', unsafe_allow_html=True)
@@ -431,24 +451,22 @@ def show_dashboard():
         st.markdown('<div class="card">', unsafe_allow_html=True)
         st.subheader("Produção por Área/Local")
         
-        if not filtered_df.empty:
-            production_by_location = filtered_df.groupby('local')[['first_quality', 'second_quality']].sum().reset_index()
-            production_by_location['total'] = production_by_location['first_quality'] + production_by_location['second_quality']
+        if not filtered_df.empty and 'local' in filtered_df.columns:
+            production_by_location = filtered_df.groupby('local').agg({
+                'first_quality': 'sum',
+                'second_quality': 'sum'
+            }).reset_index()
             
-            fig = px.pie(production_by_location, values='total', names='local',
-                         color_discrete_sequence=px.colors.qualitative.Set3)
-            fig.update_layout(plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
-                             font=dict(color='white'))
-            st.plotly_chart(fig, use_container_width=True)
-        elif not productions_df.empty:
-            production_by_location = productions_df.groupby('local')[['first_quality', 'second_quality']].sum().reset_index()
-            production_by_location['total'] = production_by_location['first_quality'] + production_by_location['second_quality']
-            
-            fig = px.pie(production_by_location, values='total', names='local',
-                         color_discrete_sequence=px.colors.qualitative.Set3)
-            fig.update_layout(plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
-                             font=dict(color='white'))
-            st.plotly_chart(fig, use_container_width=True)
+            if not production_by_location.empty:
+                production_by_location['total'] = production_by_location['first_quality'] + production_by_location['second_quality']
+                
+                fig = px.pie(production_by_location, values='total', names='local',
+                            color_discrete_sequence=px.colors.qualitative.Set3)
+                fig.update_layout(plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
+                                font=dict(color='white'), showlegend=True)
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.info("Nenhum dado disponível para o gráfico.")
         else:
             st.info("Nenhum dado de produção disponível.")
         st.markdown('</div>', unsafe_allow_html=True)
@@ -460,41 +478,25 @@ def show_dashboard():
         st.markdown('<div class="card">', unsafe_allow_html=True)
         st.subheader("Receita por Cultura")
         
-        if not productions_df.empty:
-            price_config = load_price_config()
-            revenue_by_product = []
+        if not filtered_df.empty and 'product' in filtered_df.columns:
+            if 'first_revenue' not in filtered_df.columns or 'second_revenue' not in filtered_df.columns:
+                # Calcular receitas se não existirem
+                filtered_df['first_revenue'] = filtered_df['first_quality'] * filtered_df.get('first_price', 0)
+                filtered_df['second_revenue'] = filtered_df['second_quality'] * filtered_df.get('second_price', 0)
+                filtered_df['total_revenue_item'] = filtered_df['first_revenue'] + filtered_df['second_revenue']
             
-            for product in filtered_df['product'].unique() if not filtered_df.empty else productions_df['product'].unique():
-                if not filtered_df.empty:
-                    product_data = filtered_df[filtered_df['product'] == product]
-                else:
-                    product_data = productions_df[productions_df['product'] == product]
-                    
-                product_price = price_config[price_config['product'] == product]
-                
-                if not product_price.empty:
-                    first_price = product_price['first_quality_price'].values[0]
-                    second_price = product_price['second_quality_price'].values[0]
-                else:
-                    first_price, second_price = 10.0, 5.0
-                
-                first_revenue = product_data['first_quality'].sum() * first_price
-                second_revenue = product_data['second_quality'].sum() * second_price
-                total_revenue = first_revenue + second_revenue
-                
-                revenue_by_product.append({
-                    'product': product,
-                    'first_revenue': first_revenue,
-                    'second_revenue': second_revenue,
-                    'total_revenue': total_revenue
-                })
+            revenue_by_product = filtered_df.groupby('product').agg({
+                'total_revenue_item': 'sum'
+            }).reset_index()
             
-            revenue_df = pd.DataFrame(revenue_by_product)
-            fig = px.pie(revenue_df, values='total_revenue', names='product', 
-                         color_discrete_sequence=px.colors.qualitative.Set3)
-            fig.update_layout(plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
-                             font=dict(color='white'))
-            st.plotly_chart(fig, use_container_width=True)
+            if not revenue_by_product.empty:
+                fig = px.pie(revenue_by_product, values='total_revenue_item', names='product', 
+                            color_discrete_sequence=px.colors.qualitative.Set3)
+                fig.update_layout(plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
+                                font=dict(color='white'), showlegend=True)
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.info("Nenhum dado de receita disponível.")
         else:
             st.info("Nenhum dado de produção disponível.")
         st.markdown('</div>', unsafe_allow_html=True)
@@ -503,77 +505,54 @@ def show_dashboard():
         st.markdown('<div class="card">', unsafe_allow_html=True)
         st.subheader("Análise de Qualidade por Cultura")
         
-        if not filtered_df.empty:
+        if not filtered_df.empty and 'product' in filtered_df.columns:
             quality_data = []
             for product in filtered_df['product'].unique():
                 product_data = filtered_df[filtered_df['product'] == product]
                 total = product_data['first_quality'].sum() + product_data['second_quality'].sum()
-                first_percent = (product_data['first_quality'].sum() / total * 100) if total > 0 else 0
-                second_percent = (product_data['second_quality'].sum() / total * 100) if total > 0 else 0
-                
-                quality_data.append({
-                    'product': product,
-                    '1ª Qualidade': first_percent,
-                    '2ª Qualidade': second_percent
-                })
+                if total > 0:
+                    first_percent = (product_data['first_quality'].sum() / total * 100)
+                    second_percent = (product_data['second_quality'].sum() / total * 100)
+                    
+                    quality_data.append({
+                        'product': product,
+                        '1ª Qualidade': first_percent,
+                        '2ª Qualidade': second_percent
+                    })
             
-            quality_df = pd.DataFrame(quality_data)
-            fig = px.bar(quality_df, x='product', y=['1ª Qualidade', '2ª Qualidade'], 
-                         barmode='stack', color_discrete_sequence=['#2ecc71', '#f1c40f'])
-            fig.update_layout(plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
-                             font=dict(color='white'), yaxis_title="Percentual (%)")
-            st.plotly_chart(fig, use_container_width=True)
-        elif not productions_df.empty:
-            quality_data = []
-            for product in productions_df['product'].unique():
-                product_data = productions_df[productions_df['product'] == product]
-                total = product_data['first_quality'].sum() + product_data['second_quality'].sum()
-                first_percent = (product_data['first_quality'].sum() / total * 100) if total > 0 else 0
-                second_percent = (product_data['second_quality'].sum() / total * 100) if total > 0 else 0
-                
-                quality_data.append({
-                    'product': product,
-                    '1ª Qualidade': first_percent,
-                    '2ª Qualidade': second_percent
-                })
-            
-            quality_df = pd.DataFrame(quality_data)
-            fig = px.bar(quality_df, x='product', y=['1ª Qualidade', '2ª Qualidade'], 
-                         barmode='stack', color_discrete_sequence=['#2ecc71', '#f1c40f'])
-            fig.update_layout(plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
-                             font=dict(color='white'), yaxis_title="Percentual (%)")
-            st.plotly_chart(fig, use_container_width=True)
+            if quality_data:
+                quality_df = pd.DataFrame(quality_data)
+                fig = px.bar(quality_df, x='product', y=['1ª Qualidade', '2ª Qualidade'], 
+                            barmode='stack', color_discrete_sequence=['#2ecc71', '#f1c40f'])
+                fig.update_layout(plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
+                                font=dict(color='white'), yaxis_title="Percentual (%)",
+                                xaxis_title="Cultura", showlegend=True)
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.info("Nenhum dado de qualidade disponível.")
         else:
             st.info("Nenhum dado de produção disponível.")
         st.markdown('</div>', unsafe_allow_html=True)
     
     # Evolução temporal da produção
-    st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.subheader("Evolução Temporal da Produção")
-    
-    if not filtered_df.empty:
+    if not filtered_df.empty and 'date' in filtered_df.columns:
+        st.markdown('<div class="card">', unsafe_allow_html=True)
+        st.subheader("Evolução Temporal da Produção")
+        
         time_series = filtered_df.copy()
         time_series['date'] = pd.to_datetime(time_series['date'])
-        time_series = time_series.groupby('date')[['first_quality', 'second_quality']].sum().reset_index()
+        time_series = time_series.groupby('date').agg({
+            'first_quality': 'sum',
+            'second_quality': 'sum'
+        }).reset_index()
         
         fig = px.line(time_series, x='date', y=['first_quality', 'second_quality'],
                      color_discrete_sequence=['#2ecc71', '#f1c40f'])
         fig.update_layout(plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
-                         font=dict(color='white'), yaxis_title="Caixas")
+                         font=dict(color='white'), yaxis_title="Caixas",
+                         xaxis_title="Data", showlegend=True)
         st.plotly_chart(fig, use_container_width=True)
-    elif not productions_df.empty:
-        time_series = productions_df.copy()
-        time_series['date'] = pd.to_datetime(time_series['date'])
-        time_series = time_series.groupby('date')[['first_quality', 'second_quality']].sum().reset_index()
-        
-        fig = px.line(time_series, x='date', y=['first_quality', 'second_quality'],
-                     color_discrete_sequence=['#2ecc71', '#f1c40f'])
-        fig.update_layout(plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
-                         font=dict(color='white'), yaxis_title="Caixas")
-        st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.info("Nenhum dado de produção disponível.")
-    st.markdown('</div>', unsafe_allow_html=True)
+        st.markdown('</div>', unsafe_allow_html=True)
 
 # ================================
 # PÁGINA DE CADASTRO DE PRODUÇÃO
@@ -585,90 +564,153 @@ def show_production_page():
     weather_data = get_weather_data(DEFAULT_CITY)
     
     if weather_data:
-        st.sidebar.header("Dados Climáticos Atuais")
+        st.sidebar.header("🌤️ Dados Climáticos Atuais")
         st.sidebar.success("Dados climáticos carregados automaticamente!")
         st.sidebar.write(f"**Cidade:** {weather_data['city']}")
         st.sidebar.write(f"**Temperatura:** {weather_data['temperature']}°C")
         st.sidebar.write(f"**Umidade:** {weather_data['humidity']}%")
         st.sidebar.write(f"**Chuva:** {weather_data['rain']}mm")
-        st.sidebar.write(f"**Condição:** {weather_data['description']}")
+        st.sidebar.write(f"**Condição:** {weather_data['description'].title()}")
     else:
-        st.sidebar.warning("Não foi possível carregar dados climáticos")
+        st.sidebar.warning("⚠️ Não foi possível carregar dados climáticos")
 
     with st.form("production_form", clear_on_submit=True):
+        st.markdown("### Informações da Produção")
         col1, col2 = st.columns(2)
         
         with col1:
-            date = st.date_input("Data", value=datetime.now())
-            location = st.text_input("Local/Estufa")
-            product = st.text_input("Produto")
+            date = st.date_input("📅 Data", value=datetime.now())
+            location = st.text_input("📍 Local/Estufa", placeholder="Ex: Estufa A, Talhão 1")
+            product = st.text_input("🌱 Produto", placeholder="Ex: Tomate, Alface, Morango")
         
         with col2:
-            first_quality = st.number_input("Caixas 1ª Qualidade", min_value=0.0, step=0.5)
-            second_quality = st.number_input("Caixas 2ª Qualidade", min_value=0.0, step=0.5)
+            first_quality = st.number_input("📦 Caixas 1ª Qualidade", min_value=0.0, step=0.5, value=0.0)
+            second_quality = st.number_input("📦 Caixas 2ª Qualidade", min_value=0.0, step=0.5, value=0.0)
+        
+        st.markdown("### Preços por Caixa")
+        col3, col4 = st.columns(2)
+        
+        with col3:
+            first_price = st.number_input("💰 Preço por caixa (1ª Qualidade)", 
+                                         min_value=0.0, step=0.5, value=10.0,
+                                         help="Preço de venda por caixa da 1ª qualidade")
+        
+        with col4:
+            second_price = st.number_input("💰 Preço por caixa (2ª Qualidade)", 
+                                          min_value=0.0, step=0.5, value=5.0,
+                                          help="Preço de venda por caixa da 2ª qualidade")
+        
+        st.markdown("### Dados Climáticos")
+        col5, col6, col7 = st.columns(3)
         
         # Usar dados da API automaticamente
         if weather_data:
-            temperature = weather_data['temperature']
-            humidity = weather_data['humidity']
-            rain = weather_data['rain']
+            with col5:
+                temperature = st.number_input("🌡️ Temperatura (°C)", 
+                                            value=float(weather_data['temperature']), 
+                                            step=0.1)
             
-            st.info(f"Dados climáticos serão salvos: Temperatura: {temperature}°C, Umidade: {humidity}%, Chuva: {rain}mm")
+            with col6:
+                humidity = st.number_input("💧 Umidade (%)", 
+                                          value=float(weather_data['humidity']),
+                                          min_value=0, max_value=100, step=1)
+            
+            with col7:
+                rain = st.number_input("🌧️ Chuva (mm)", 
+                                      value=float(weather_data['rain']),
+                                      min_value=0.0, step=0.1)
         else:
-            temperature = st.number_input("Temperatura (°C)", value=25.0)
-            humidity = st.slider("Umidade (%)", 0, 100, 60)
-            rain = st.number_input("Chuva (mm)", min_value=0.0, value=0.0, step=0.1)
+            with col5:
+                temperature = st.number_input("🌡️ Temperatura (°C)", value=25.0, step=0.1)
+            with col6:
+                humidity = st.number_input("💧 Umidade (%)", value=60, min_value=0, max_value=100, step=1)
+            with col7:
+                rain = st.number_input("🌧️ Chuva (mm)", min_value=0.0, value=0.0, step=0.1)
         
-        submitted = st.form_submit_button("Salvar Produção")
+        # Cálculo automático da receita
+        total_revenue = (first_quality * first_price) + (second_quality * second_price)
+        
+        st.markdown("---")
+        st.markdown(f"**💰 Receita total estimada: R$ {total_revenue:,.2f}**")
+        
+        submitted = st.form_submit_button("💾 Salvar Produção", type="primary")
         
         if submitted:
-            if not all([location, product]):
-                st.error("Preencha todos os campos obrigatórios.")
+            if not all([location.strip(), product.strip()]):
+                st.error("❌ Preencha todos os campos obrigatórios (Local e Produto).")
+            elif first_quality == 0 and second_quality == 0:
+                st.error("❌ Informe pelo menos uma quantidade de caixas.")
             else:
                 success = save_production(
                     date.isoformat(), 
-                    location, 
-                    product, 
+                    location.strip(), 
+                    product.strip(), 
                     first_quality, 
-                    second_quality, 
+                    second_quality,
+                    first_price,
+                    second_price,
                     temperature, 
                     humidity, 
                     rain,
                     json.dumps(weather_data) if weather_data else ""
                 )
                 if success:
-                    st.success("Produção registrada com sucesso!")
+                    st.success("✅ Produção registrada com sucesso!")
+                    time.sleep(1)
                     st.rerun()
                 else:
-                    st.error("Erro ao salvar produção. Verifique a conexão com o banco de dados.")
+                    st.error("❌ Erro ao salvar produção. Verifique a conexão com o banco de dados.")
     
     # Mostrar dados recentes com opção de exclusão
+    st.markdown("---")
+    st.subheader("📋 Produções Recentes")
+    
     productions_df = load_productions()
         
     if not productions_df.empty:
-        st.subheader("Produções Recentes")
+        # Mostrar apenas colunas relevantes
+        display_cols = ['date', 'product', 'local', 'first_quality', 'second_quality', 
+                       'first_price', 'second_price', 'temperature']
         
-        # Adicionar opção de exclusão
-        for idx, row in productions_df.head(10).iterrows():
-            col1, col2, col3, col4 = st.columns([3, 2, 2, 1])
-            with col1:
-                st.write(f"{row['date']} - {row['product']} em {row['local']}")
-            with col2:
-                st.write(f"1ª: {row['first_quality']}cx, 2ª: {row['second_quality']}cx")
-            with col3:
-                if pd.notna(row['temperature']):
-                    st.write(f"T: {row['temperature']}°C, U: {row['humidity']}%")
-            with col4:
-                if st.button("🗑️", key=f"delete_{row['id']}"):
-                    if delete_production(row['id']):
-                        st.success("Registro excluído com sucesso!")
-                        st.rerun()
-                    else:
-                        st.error("Erro ao excluir registro.")
+        # Garantir que as colunas existam
+        available_cols = [col for col in display_cols if col in productions_df.columns]
+        
+        if available_cols:
+            # Formatar DataFrame para exibição
+            display_df = productions_df[available_cols].head(10).copy()
+            
+            # Adicionar coluna de ações
+            display_df['Ações'] = ""
+            
+            # Exibir tabela
+            for idx, row in display_df.iterrows():
+                col1, col2, col3, col4, col5 = st.columns([2, 2, 2, 3, 1])
+                with col1:
+                    st.write(f"**{row['date']}**")
+                with col2:
+                    st.write(f"🌱 {row['product']}")
+                with col3:
+                    st.write(f"📍 {row['local']}")
+                with col4:
+                    if 'first_quality' in row and 'second_quality' in row:
+                        st.write(f"📦 1ª: {row['first_quality']} | 2ª: {row['second_quality']}")
+                    if 'first_price' in row and 'second_price' in row:
+                        st.write(f"💰 R$ {row['first_price']:.2f} | R$ {row['second_price']:.2f}")
+                with col5:
+                    original_idx = productions_df.iloc[idx].name
+                    production_id = productions_df.iloc[idx]['id'] if 'id' in productions_df.iloc[idx] else None
+                    
+                    if production_id and st.button("🗑️", key=f"delete_{production_id}"):
+                        if delete_production(production_id):
+                            st.success("✅ Registro excluído com sucesso!")
+                            time.sleep(1)
+                            st.rerun()
+                        else:
+                            st.error("❌ Erro ao excluir registro.")
         
         # Adicionar botão para baixar dados em Excel
         st.markdown("---")
-        st.subheader("Exportar Dados")
+        st.subheader("📤 Exportar Dados")
         
         if not productions_df.empty:
             # Criar Excel em memória
@@ -705,9 +747,12 @@ def show_production_page():
             st.download_button(
                 label="📥 Baixar Dados em Excel",
                 data=output,
-                file_name=f"producoes_{datetime.now().strftime('%Y%m%d')}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                file_name=f"producoes_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                type="primary"
             )
+    else:
+        st.info("📭 Nenhuma produção registrada ainda.")
 
 # ================================
 # PÁGINA DE CADASTRO DE INSUMOS
@@ -716,52 +761,64 @@ def show_inputs_page():
     st.title("💰 Cadastro de Insumos")
     
     with st.form("inputs_form", clear_on_submit=True):
+        st.markdown("### Informações do Insumo")
         col1, col2 = st.columns(2)
         
         with col1:
-            date = st.date_input("Data", value=datetime.now())
-            input_type = st.selectbox("Tipo de Insumo", 
+            date = st.date_input("📅 Data", value=datetime.now())
+            input_type = st.selectbox("📦 Tipo de Insumo", 
                                      ["Semente", "Fertilizante", "Defensivo", "Mão de Obra", "Equipamento", "Outros"])
-            description = st.text_input("Descrição")
+            description = st.text_input("📝 Descrição", placeholder="Ex: Adubo NPK 10-10-10")
         
         with col2:
-            quantity = st.number_input("Quantidade", min_value=0.0, step=0.1)
-            unit = st.selectbox("Unidade", ["kg", "L", "un", "h", "sc", "outro"])
-            cost = st.number_input("Custo (R$)", min_value=0.0, step=0.01)
+            quantity = st.number_input("⚖️ Quantidade", min_value=0.0, step=0.1, value=1.0)
+            unit = st.selectbox("📏 Unidade", ["kg", "L", "un", "h", "sc", "outro"])
+            cost = st.number_input("💵 Custo (R$)", min_value=0.0, step=0.01, value=0.0)
         
-        location = st.text_input("Local aplicado")
+        location = st.text_input("📍 Local aplicado", placeholder="Ex: Estufa A, Talhão 1")
         
-        submitted = st.form_submit_button("Salvar Insumo")
+        submitted = st.form_submit_button("💾 Salvar Insumo", type="primary")
         
         if submitted:
-            if not all([input_type, description, quantity > 0, cost > 0]):
-                st.error("Preencha todos os campos obrigatórios.")
+            if not all([input_type, description.strip(), quantity > 0, cost > 0]):
+                st.error("❌ Preencha todos os campos obrigatórios.")
             else:
                 success = save_input(
                     date.isoformat(), 
                     input_type, 
-                    description, 
+                    description.strip(), 
                     quantity, 
                     unit, 
                     cost, 
-                    location
+                    location.strip()
                 )
                 if success:
-                    st.success("Insumo registrado com sucesso!")
+                    st.success("✅ Insumo registrado com sucesso!")
+                    time.sleep(1)
                     st.rerun()
                 else:
-                    st.error("Erro ao salvar insumo. Verifique a conexão com o banco de dados.")
+                    st.error("❌ Erro ao salvar insumo. Verifique a conexão com o banco de dados.")
     
     # Mostrar dados recentes
+    st.markdown("---")
+    st.subheader("📋 Insumos Recentes")
+    
     inputs_df = load_inputs()
         
     if not inputs_df.empty:
-        st.subheader("Insumos Recentes")
-        st.dataframe(inputs_df.head(10), use_container_width=True)
+        # Mostrar apenas colunas relevantes
+        display_cols = ['date', 'type', 'description', 'quantity', 'unit', 'cost', 'location']
+        
+        # Garantir que as colunas existam
+        available_cols = [col for col in display_cols if col in inputs_df.columns]
+        
+        if available_cols:
+            display_df = inputs_df[available_cols].head(10)
+            st.dataframe(display_df, use_container_width=True)
         
         # Adicionar botão para baixar dados em Excel
         st.markdown("---")
-        st.subheader("Exportar Dados")
+        st.subheader("📤 Exportar Dados")
         
         if not inputs_df.empty:
             # Criar Excel em memória
@@ -798,48 +855,12 @@ def show_inputs_page():
             st.download_button(
                 label="📥 Baixar Dados em Excel",
                 data=output,
-                file_name=f"insumos_{datetime.now().strftime('%Y%m%d')}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                file_name=f"insumos_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                type="primary"
             )
-
-# ================================
-# PÁGINA DE CONFIGURAÇÕES
-# ================================
-def show_settings_page():
-    st.title("⚙️ Configurações de Preços")
-    
-    price_config = load_price_config()
-    
-    st.subheader("Preços Atuais por Cultura")
-    if not price_config.empty:
-        st.dataframe(price_config[['product', 'first_quality_price', 'second_quality_price']], 
-                    use_container_width=True)
     else:
-        st.info("Nenhum preço configurado. Adicione preços para suas culturas.")
-    
-    st.subheader("Adicionar/Editar Preços")
-    with st.form("price_form"):
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            product = st.text_input("Cultura")
-        with col2:
-            first_price = st.number_input("Preço 1ª Qualidade (R$)", min_value=0.0, step=0.5)
-        with col3:
-            second_price = st.number_input("Preço 2ª Qualidade (R$)", min_value=0.0, step=0.5)
-        
-        submitted = st.form_submit_button("Salvar Preços")
-        
-        if submitted:
-            if not all([product, first_price > 0, second_price > 0]):
-                st.error("Preencha todos os campos corretamente.")
-            else:
-                success = save_price_config(product, first_price, second_price)
-                if success:
-                    st.success("Preços salvos com sucesso!")
-                    st.rerun()
-                else:
-                    st.error("Erro ao salvar preços. Verifique a conexão com o banco de dados.")
+        st.info("📭 Nenhum insumo registrado ainda.")
 
 # ================================
 # PÁGINA DE RELATÓRIOS
@@ -851,137 +872,246 @@ def show_reports_page():
     inputs_df = load_inputs()
     
     if productions_df.empty:
-        st.warning("Nenhum dado disponível para gerar relatórios.")
+        st.warning("⚠️ Nenhum dado disponível para gerar relatórios.")
         return
     
     # Filtros para relatórios
-    st.sidebar.header("Filtros do Relatório")
+    st.sidebar.header("🔍 Filtros do Relatório")
     
     if not productions_df.empty:
-        productions_df['date'] = pd.to_datetime(productions_df['date'])
-        min_date = productions_df['date'].min().date()
-        max_date = productions_df['date'].max().date()
-        
-        report_date_range = st.sidebar.date_input(
-            "Período do Relatório",
-            value=(min_date, max_date),
-            min_value=min_date,
-            max_value=max_date
-        )
-        
-        # Filtro por local
-        all_locations = productions_df['local'].unique().tolist()
-        selected_locations = st.sidebar.multiselect(
-            "Filtrar por Local",
-            options=all_locations,
-            default=all_locations
-        )
-        
-        # Filtro por cultura
-        all_products = productions_df['product'].unique().tolist()
-        selected_products = st.sidebar.multiselect(
-            "Filtrar por Cultura",
-            options=all_products,
-            default=all_products
-        )
-        
-        # Tipo de relatório
-        report_type = st.sidebar.selectbox(
-            "Tipo de Relatório",
-            ["Produção Detalhada", "Resumo Financeiro", "Análise de Qualidade", "Custos e Insumos"]
-        )
-        
-        try:
-            start_date, end_date = report_date_range
-        except:
-            start_date, end_date = min_date, max_date
-        
-        # Filtrar dados
-        filtered_prod = productions_df[
-            (productions_df['date'].dt.date >= start_date) &
-            (productions_df['date'].dt.date <= end_date) &
-            (productions_df['local'].isin(selected_locations)) &
-            (productions_df['product'].isin(selected_products))
-        ]
-        
-        filtered_inputs = inputs_df[
-            (pd.to_datetime(inputs_df['date']).dt.date >= start_date) &
-            (pd.to_datetime(inputs_df['date']).dt.date <= end_date)
-        ] if not inputs_df.empty else pd.DataFrame()
-        
-        if filtered_prod.empty:
-            st.warning("Nenhum dado encontrado para o período selecionado.")
-            return
-        
-        # Gerar relatório selecionado
-        if report_type == "Produção Detalhada":
-            st.header("📊 Relatório de Produção Detalhada")
-            st.dataframe(filtered_prod, use_container_width=True)
+        # Garantir que a coluna date existe e é datetime
+        if 'date' in productions_df.columns:
+            productions_df['date'] = pd.to_datetime(productions_df['date'], errors='coerce')
+            productions_df = productions_df.dropna(subset=['date'])
             
-        elif report_type == "Resumo Financeiro":
-            st.header("💰 Relatório Financeiro")
-            financials = calculate_financials(filtered_prod, filtered_inputs)
-            
-            col1, col2, col3, col4 = st.columns(4)
-            with col1:
-                st.metric("Receita Total", f"R$ {financials['total_revenue']:,.2f}")
-            with col2:
-                st.metric("Custos Totais", f"R$ {financials['total_costs']:,.2f}")
-            with col3:
-                st.metric("Lucro Líquido", f"R$ {financials['profit']:,.2f}")
-            with col4:
-                st.metric("Margem de Lucro", f"{financials['profit_margin']:.1f}%")
+            if not productions_df.empty:
+                min_date = productions_df['date'].min().date()
+                max_date = productions_df['date'].max().date()
                 
-        elif report_type == "Análise de Qualidade":
-            st.header("🔍 Análise de Qualidade")
-            
-            quality_data = []
-            for product in filtered_prod['product'].unique():
-                product_data = filtered_prod[filtered_prod['product'] == product]
-                total = product_data['first_quality'].sum() + product_data['second_quality'].sum()
+                report_date_range = st.sidebar.date_input(
+                    "📅 Período do Relatório",
+                    value=(min_date, max_date),
+                    min_value=min_date,
+                    max_value=max_date
+                )
                 
-                if total > 0:
-                    first_percent = (product_data['first_quality'].sum() / total * 100)
-                    second_percent = (product_data['second_quality'].sum() / total * 100)
+                # Filtro por local
+                all_locations = productions_df['local'].unique().tolist() if 'local' in productions_df.columns else []
+                selected_locations = st.sidebar.multiselect(
+                    "📍 Filtrar por Local",
+                    options=all_locations,
+                    default=all_locations[:5] if all_locations else []
+                )
+                
+                # Filtro por cultura
+                all_products = productions_df['product'].unique().tolist() if 'product' in productions_df.columns else []
+                selected_products = st.sidebar.multiselect(
+                    "🌱 Filtrar por Cultura",
+                    options=all_products,
+                    default=all_products[:5] if all_products else []
+                )
+                
+                # Tipo de relatório
+                report_type = st.sidebar.selectbox(
+                    "📊 Tipo de Relatório",
+                    ["Produção Detalhada", "Resumo Financeiro", "Análise de Qualidade", "Custos e Insumos"]
+                )
+                
+                try:
+                    start_date, end_date = report_date_range
+                except:
+                    start_date, end_date = min_date, max_date
+                
+                # Filtrar dados de produção
+                filtered_prod = productions_df[
+                    (productions_df['date'].dt.date >= start_date) &
+                    (productions_df['date'].dt.date <= end_date)
+                ]
+                
+                if selected_locations:
+                    filtered_prod = filtered_prod[filtered_prod['local'].isin(selected_locations)]
+                if selected_products:
+                    filtered_prod = filtered_prod[filtered_prod['product'].isin(selected_products)]
+                
+                # Filtrar dados de insumos
+                if not inputs_df.empty and 'date' in inputs_df.columns:
+                    inputs_df['date'] = pd.to_datetime(inputs_df['date'], errors='coerce')
+                    filtered_inputs = inputs_df[
+                        (inputs_df['date'].dt.date >= start_date) &
+                        (inputs_df['date'].dt.date <= end_date)
+                    ]
+                else:
+                    filtered_inputs = pd.DataFrame()
+                
+                if filtered_prod.empty:
+                    st.warning("ℹ️ Nenhum dado encontrado para o período selecionado.")
+                    return
+                
+                # Gerar relatório selecionado
+                if report_type == "Produção Detalhada":
+                    st.header("📊 Relatório de Produção Detalhada")
                     
-                    quality_data.append({
-                        'Produto': product,
-                        'Total Caixas': total,
-                        '1ª Qualidade (%)': first_percent,
-                        '2ª Qualidade (%)': second_percent
+                    # Preparar dados para exibição
+                    report_cols = ['date', 'product', 'local', 'first_quality', 'second_quality', 
+                                 'first_price', 'second_price', 'temperature', 'humidity']
+                    
+                    # Garantir que as colunas existem
+                    available_cols = [col for col in report_cols if col in filtered_prod.columns]
+                    
+                    if available_cols:
+                        report_df = filtered_prod[available_cols].copy()
+                        
+                        # Calcular totais
+                        if 'first_quality' in report_df.columns and 'second_quality' in report_df.columns:
+                            report_df['total_quality'] = report_df['first_quality'] + report_df['second_quality']
+                        
+                        # Calcular receita por item
+                        if all(col in report_df.columns for col in ['first_quality', 'second_quality', 'first_price', 'second_price']):
+                            report_df['revenue'] = (report_df['first_quality'] * report_df['first_price'] + 
+                                                   report_df['second_quality'] * report_df['second_price'])
+                        
+                        st.dataframe(report_df, use_container_width=True)
+                        
+                        # Resumo
+                        st.subheader("📈 Resumo")
+                        col1, col2, col3 = st.columns(3)
+                        
+                        with col1:
+                            if 'first_quality' in report_df.columns and 'second_quality' in report_df.columns:
+                                total_boxes = report_df['first_quality'].sum() + report_df['second_quality'].sum()
+                                st.metric("Total de Caixas", f"{total_boxes:,.0f}")
+                        
+                        with col2:
+                            if 'revenue' in report_df.columns:
+                                total_revenue = report_df['revenue'].sum()
+                                st.metric("Receita Total", f"R$ {total_revenue:,.2f}")
+                        
+                        with col3:
+                            if 'product' in report_df.columns:
+                                num_products = report_df['product'].nunique()
+                                st.metric("Culturas", f"{num_products}")
+                    
+                elif report_type == "Resumo Financeiro":
+                    st.header("💰 Relatório Financeiro")
+                    
+                    financials = calculate_financials(filtered_prod, filtered_inputs)
+                    
+                    col1, col2, col3, col4 = st.columns(4)
+                    with col1:
+                        st.metric("Receita Total", f"R$ {financials['total_revenue']:,.2f}")
+                    with col2:
+                        st.metric("Custos Totais", f"R$ {financials['total_costs']:,.2f}")
+                    with col3:
+                        profit_color = "green" if financials['profit'] >= 0 else "red"
+                        st.metric("Lucro Líquido", f"R$ {financials['profit']:,.2f}")
+                    with col4:
+                        st.metric("Margem de Lucro", f"{financials['profit_margin']:.1f}%")
+                    
+                    # Gráfico de receita vs custos
+                    st.subheader("📊 Receita vs Custos")
+                    
+                    comparison_data = pd.DataFrame({
+                        'Categoria': ['Receita', 'Custos', 'Lucro'],
+                        'Valor (R$)': [financials['total_revenue'], financials['total_costs'], financials['profit']]
                     })
-            
-            quality_df = pd.DataFrame(quality_data)
-            st.dataframe(quality_df, use_container_width=True)
-            
-        elif report_type == "Custos e Insumos":
-            st.header("💸 Análise de Custos e Insumos")
-            
-            if not filtered_inputs.empty:
-                st.dataframe(filtered_inputs, use_container_width=True)
+                    
+                    fig = px.bar(comparison_data, x='Categoria', y='Valor (R$)', 
+                                color='Categoria', color_discrete_sequence=['#2ecc71', '#e74c3c', '#3498db'])
+                    fig.update_layout(plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
+                                    font=dict(color='white'), showlegend=False)
+                    st.plotly_chart(fig, use_container_width=True)
+                        
+                elif report_type == "Análise de Qualidade":
+                    st.header("🔍 Análise de Qualidade")
+                    
+                    quality_data = []
+                    for product in filtered_prod['product'].unique():
+                        product_data = filtered_prod[filtered_prod['product'] == product]
+                        total = product_data['first_quality'].sum() + product_data['second_quality'].sum()
+                        
+                        if total > 0:
+                            first_percent = (product_data['first_quality'].sum() / total * 100)
+                            second_percent = (product_data['second_quality'].sum() / total * 100)
+                            
+                            quality_data.append({
+                                'Produto': product,
+                                'Total Caixas': total,
+                                '1ª Qualidade': product_data['first_quality'].sum(),
+                                '2ª Qualidade': product_data['second_quality'].sum(),
+                                '1ª Qualidade (%)': f"{first_percent:.1f}%",
+                                '2ª Qualidade (%)': f"{second_percent:.1f}%"
+                            })
+                    
+                    if quality_data:
+                        quality_df = pd.DataFrame(quality_data)
+                        st.dataframe(quality_df, use_container_width=True)
+                        
+                        # Gráfico de qualidade
+                        st.subheader("📊 Distribuição de Qualidade")
+                        
+                        melted_df = quality_df.melt(id_vars=['Produto'], 
+                                                   value_vars=['1ª Qualidade', '2ª Qualidade'],
+                                                   var_name='Qualidade', value_name='Caixas')
+                        
+                        fig = px.bar(melted_df, x='Produto', y='Caixas', color='Qualidade',
+                                    barmode='group', color_discrete_sequence=['#2ecc71', '#f1c40f'])
+                        fig.update_layout(plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
+                                        font=dict(color='white'), yaxis_title="Número de Caixas")
+                        st.plotly_chart(fig, use_container_width=True)
+                    else:
+                        st.info("ℹ️ Nenhum dado de qualidade disponível.")
+                    
+                elif report_type == "Custos e Insumos":
+                    st.header("💸 Análise de Custos e Insumos")
+                    
+                    if not filtered_inputs.empty:
+                        st.subheader("📋 Detalhamento de Insumos")
+                        st.dataframe(filtered_inputs, use_container_width=True)
+                        
+                        # Análise por tipo de insumo
+                        st.subheader("📊 Distribuição por Tipo de Insumo")
+                        
+                        if 'type' in filtered_inputs.columns and 'cost' in filtered_inputs.columns:
+                            cost_by_type = filtered_inputs.groupby('type')['cost'].sum().reset_index()
+                            
+                            fig = px.pie(cost_by_type, values='cost', names='type',
+                                        color_discrete_sequence=px.colors.qualitative.Set3)
+                            fig.update_layout(plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
+                                            font=dict(color='white'), showlegend=True)
+                            st.plotly_chart(fig, use_container_width=True)
+                    else:
+                        st.info("ℹ️ Nenhum dado de insumos/custos para o período selecionado.")
             else:
-                st.info("Nenhum dado de insumos/custos para o período selecionado.")
+                st.warning("⚠️ Dados de produção não contêm informações de data válidas.")
+        else:
+            st.warning("⚠️ Coluna 'date' não encontrada nos dados de produção.")
 
 # ================================
 # FUNÇÃO PRINCIPAL
 # ================================
 def main():
     # Inicializar banco de dados
-    init_db()
+    if not init_db():
+        st.error("❌ Falha na conexão com o banco de dados. Algumas funcionalidades podem não estar disponíveis.")
     
     # Menu lateral
     with st.sidebar:
-        st.image("https://via.placeholder.com/150x50/2d5016/ffffff?text=AgroGestão", use_container_width=True)
-        st.markdown("**Sistema de Gestão Agrícola**")
+        st.markdown("""
+            <div style='text-align: center; margin-bottom: 20px;'>
+                <h1 style='color: #2d5016;'>🌱 AgroGestão</h1>
+                <p style='color: #666;'>Sistema de Gestão Agrícola</p>
+            </div>
+        """, unsafe_allow_html=True)
+        
         st.markdown("---")
         
         # Menu de navegação
-        menu_options = ["📊 Dashboard", "📝 Produção", "💰 Insumos", "📋 Relatórios", "⚙️ Configurações"]
+        menu_options = ["📊 Dashboard", "📝 Produção", "💰 Insumos", "📋 Relatórios"]
         
         selected = option_menu(
             menu_title="Navegação",
             options=menu_options,
-            icons=["speedometer2", "pencil", "cash-coin", "file-text", "gear"],
+            icons=["speedometer2", "pencil", "cash-coin", "file-text"],
             menu_icon="cast",
             default_index=0,
             styles={
@@ -1001,8 +1131,6 @@ def main():
         show_inputs_page()
     elif selected == "📋 Relatórios":
         show_reports_page()
-    elif selected == "⚙️ Configurações":
-        show_settings_page()
 
 # ================================
 # EXECUÇÃO DO APLICATIVO
