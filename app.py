@@ -230,9 +230,9 @@ def get_weather_data(city):
         if response.status_code == 200:
             data = response.json()
             return {
-                "temperature": data["main"]["temp"],
-                "humidity": data["main"]["humidity"],
-                "rain": data.get("rain", {}).get("1h", 0) if "rain" in data else 0,
+                "temperature": float(data["main"]["temp"]),
+                "humidity": float(data["main"]["humidity"]),
+                "rain": float(data.get("rain", {}).get("1h", 0)) if "rain" in data else 0.0,
                 "description": data["weather"][0]["description"],
                 "city": data["name"],
                 "country": data["sys"]["country"],
@@ -244,7 +244,6 @@ def get_weather_data(city):
     except Exception as e:
         st.error(f"Erro de conexão com a API climática: {str(e)}")
         return None
-
 # ================================
 # FUNÇÕES DE CÁLCULO FINANCEIRO
 # ================================
@@ -573,6 +572,12 @@ def show_production_page():
         st.sidebar.write(f"**Condição:** {weather_data['description'].title()}")
     else:
         st.sidebar.warning("⚠️ Não foi possível carregar dados climáticos")
+        # Dados padrão caso a API falhe
+        weather_data = {
+            'temperature': 25.0,
+            'humidity': 60.0,
+            'rain': 0.0
+        }
 
     with st.form("production_form", clear_on_submit=True):
         st.markdown("### Informações da Produção")
@@ -584,8 +589,8 @@ def show_production_page():
             product = st.text_input("🌱 Produto", placeholder="Ex: Tomate, Alface, Morango")
         
         with col2:
-            first_quality = st.number_input("📦 Caixas 1ª Qualidade", min_value=0.0, step=0.5, value=0.0)
-            second_quality = st.number_input("📦 Caixas 2ª Qualidade", min_value=0.0, step=0.5, value=0.0)
+            first_quality = st.number_input("📦 Caixas 1ª Qualidade", min_value=0.0, step=0.5, value=0.0, format="%.1f")
+            second_quality = st.number_input("📦 Caixas 2ª Qualidade", min_value=0.0, step=0.5, value=0.0, format="%.1f")
         
         st.markdown("### Preços por Caixa")
         col3, col4 = st.columns(2)
@@ -593,39 +598,45 @@ def show_production_page():
         with col3:
             first_price = st.number_input("💰 Preço por caixa (1ª Qualidade)", 
                                          min_value=0.0, step=0.5, value=10.0,
-                                         help="Preço de venda por caixa da 1ª qualidade")
+                                         help="Preço de venda por caixa da 1ª qualidade",
+                                         format="%.2f")
         
         with col4:
             second_price = st.number_input("💰 Preço por caixa (2ª Qualidade)", 
                                           min_value=0.0, step=0.5, value=5.0,
-                                          help="Preço de venda por caixa da 2ª qualidade")
+                                          help="Preço de venda por caixa da 2ª qualidade",
+                                          format="%.2f")
         
         st.markdown("### Dados Climáticos")
         col5, col6, col7 = st.columns(3)
         
         # Usar dados da API automaticamente
-        if weather_data:
-            with col5:
-                temperature = st.number_input("🌡️ Temperatura (°C)", 
-                                            value=float(weather_data['temperature']), 
-                                            step=0.1)
-            
-            with col6:
-                humidity = st.number_input("💧 Umidade (%)", 
-                                          value=float(weather_data['humidity']),
-                                          min_value=0, max_value=100, step=1)
-            
-            with col7:
-                rain = st.number_input("🌧️ Chuva (mm)", 
-                                      value=float(weather_data['rain']),
-                                      min_value=0.0, step=0.1)
-        else:
-            with col5:
-                temperature = st.number_input("🌡️ Temperatura (°C)", value=25.0, step=0.1)
-            with col6:
-                humidity = st.number_input("💧 Umidade (%)", value=60, min_value=0, max_value=100, step=1)
-            with col7:
-                rain = st.number_input("🌧️ Chuva (mm)", min_value=0.0, value=0.0, step=0.1)
+        with col5:
+            # Converter para float garantindo que seja um número
+            temp_value = float(weather_data.get('temperature', 25.0))
+            temperature = st.number_input("🌡️ Temperatura (°C)", 
+                                        value=temp_value, 
+                                        step=0.1,
+                                        format="%.1f")
+        
+        with col6:
+            # Converter para float garantindo que seja um número
+            humidity_value = float(weather_data.get('humidity', 60.0))
+            humidity = st.number_input("💧 Umidade (%)", 
+                                      value=humidity_value,
+                                      min_value=0.0, 
+                                      max_value=100.0, 
+                                      step=1.0,
+                                      format="%.0f")
+        
+        with col7:
+            # Converter para float garantindo que seja um número
+            rain_value = float(weather_data.get('rain', 0.0))
+            rain = st.number_input("🌧️ Chuva (mm)", 
+                                  value=rain_value,
+                                  min_value=0.0, 
+                                  step=0.1,
+                                  format="%.1f")
         
         # Cálculo automático da receita
         total_revenue = (first_quality * first_price) + (second_quality * second_price)
@@ -633,6 +644,7 @@ def show_production_page():
         st.markdown("---")
         st.markdown(f"**💰 Receita total estimada: R$ {total_revenue:,.2f}**")
         
+        # CORREÇÃO AQUI: Usar st.form_submit_button() em vez de st.button()
         submitted = st.form_submit_button("💾 Salvar Produção", type="primary")
         
         if submitted:
@@ -660,99 +672,6 @@ def show_production_page():
                     st.rerun()
                 else:
                     st.error("❌ Erro ao salvar produção. Verifique a conexão com o banco de dados.")
-    
-    # Mostrar dados recentes com opção de exclusão
-    st.markdown("---")
-    st.subheader("📋 Produções Recentes")
-    
-    productions_df = load_productions()
-        
-    if not productions_df.empty:
-        # Mostrar apenas colunas relevantes
-        display_cols = ['date', 'product', 'local', 'first_quality', 'second_quality', 
-                       'first_price', 'second_price', 'temperature']
-        
-        # Garantir que as colunas existam
-        available_cols = [col for col in display_cols if col in productions_df.columns]
-        
-        if available_cols:
-            # Formatar DataFrame para exibição
-            display_df = productions_df[available_cols].head(10).copy()
-            
-            # Adicionar coluna de ações
-            display_df['Ações'] = ""
-            
-            # Exibir tabela
-            for idx, row in display_df.iterrows():
-                col1, col2, col3, col4, col5 = st.columns([2, 2, 2, 3, 1])
-                with col1:
-                    st.write(f"**{row['date']}**")
-                with col2:
-                    st.write(f"🌱 {row['product']}")
-                with col3:
-                    st.write(f"📍 {row['local']}")
-                with col4:
-                    if 'first_quality' in row and 'second_quality' in row:
-                        st.write(f"📦 1ª: {row['first_quality']} | 2ª: {row['second_quality']}")
-                    if 'first_price' in row and 'second_price' in row:
-                        st.write(f"💰 R$ {row['first_price']:.2f} | R$ {row['second_price']:.2f}")
-                with col5:
-                    original_idx = productions_df.iloc[idx].name
-                    production_id = productions_df.iloc[idx]['id'] if 'id' in productions_df.iloc[idx] else None
-                    
-                    if production_id and st.button("🗑️", key=f"delete_{production_id}"):
-                        if delete_production(production_id):
-                            st.success("✅ Registro excluído com sucesso!")
-                            time.sleep(1)
-                            st.rerun()
-                        else:
-                            st.error("❌ Erro ao excluir registro.")
-        
-        # Adicionar botão para baixar dados em Excel
-        st.markdown("---")
-        st.subheader("📤 Exportar Dados")
-        
-        if not productions_df.empty:
-            # Criar Excel em memória
-            output = io.BytesIO()
-            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                productions_df.to_excel(writer, sheet_name='Produções', index=False)
-                
-                # Adicionar formatação
-                workbook = writer.book
-                worksheet = writer.sheets['Produções']
-                
-                # Formatar cabeçalhos
-                header_format = workbook.add_format({
-                    'bold': True,
-                    'text_wrap': True,
-                    'valign': 'top',
-                    'fg_color': '#2d5016',
-                    'font_color': 'white',
-                    'border': 1
-                })
-                
-                # Aplicar formatação aos cabeçalhos
-                for col_num, value in enumerate(productions_df.columns.values):
-                    worksheet.write(0, col_num, value, header_format)
-                
-                # Ajustar largura das colunas
-                for idx, col in enumerate(productions_df.columns):
-                    max_len = max(productions_df[col].astype(str).map(len).max(), len(col)) + 2
-                    worksheet.set_column(idx, idx, max_len)
-            
-            output.seek(0)
-            
-            # Botão de download
-            st.download_button(
-                label="📥 Baixar Dados em Excel",
-                data=output,
-                file_name=f"producoes_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                type="primary"
-            )
-    else:
-        st.info("📭 Nenhuma produção registrada ainda.")
 
 # ================================
 # PÁGINA DE CADASTRO DE INSUMOS
